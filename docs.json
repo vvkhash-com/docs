@@ -99,10 +99,6 @@
     "timestamp": true
   },
   "description": "Software and Systems Engineering",
-  "logo": {
-    "light": "/images/icon-devops-01.svg",
-    "dark": "/images/icon-devops-01.svg"
-  },
   "fonts": {
     "heading": {
       "family": "Roboto"
