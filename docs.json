@@ -1,11 +1,14 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Vvkhash Notes",
+  "name": "Software and Systems Engineering",
   "theme": "luma",
   "colors": {
     "primary": "#040404"
   },
-  "favicon": "https://media.brand.dev/fd68cce0-05d0-41fd-901c-702c42c2e0d0.svg",
+  "favicon": {
+    "light": "/images/icon-devops-01.svg",
+    "dark": "/images/icon-devops-01.svg"
+  },
   "navigation": {
     "tabs": [
       {
@@ -52,6 +55,9 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "R&D"
       }
     ]
   },
@@ -76,7 +82,8 @@
     }
   },
   "styling": {
-    "eyebrows": "section"
+    "eyebrows": "breadcrumbs",
+    "latex": false
   },
   "icons": {
     "library": "fontawesome"
@@ -90,5 +97,40 @@
   ],
   "metadata": {
     "timestamp": true
+  },
+  "description": "Software and Systems Engineering",
+  "logo": {
+    "light": "/images/icon-devops-01.svg",
+    "dark": "/images/icon-devops-01.svg"
+  },
+  "fonts": {
+    "heading": {
+      "family": "Roboto"
+    },
+    "body": {
+      "family": "Roboto"
+    }
+  },
+  "thumbnails": {
+    "fonts": {
+      "family": "Inter"
+    }
+  },
+  "contextual": {
+    "options": [
+      "download-pdf"
+    ],
+    "display": "header"
+  },
+  "interaction": {
+    "drilldown": true
+  },
+  "api": {
+    "playground": {
+      "credentials": true
+    }
+  },
+  "seo": {
+    "indexing": "navigable"
   }
 }
