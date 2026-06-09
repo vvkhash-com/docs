@@ -13,7 +13,8 @@
     "tabs": [
       {
         "tab": "Notes",
-        "groups": [
+        "pages": [
+          "untitled-page",
           {
             "group": "DevOps & CI/CD",
             "pages": [
@@ -105,12 +106,6 @@
     "fonts": {
       "family": "Inter"
     }
-  },
-  "contextual": {
-    "options": [
-      "download-pdf"
-    ],
-    "display": "header"
   },
   "interaction": {
     "drilldown": true
