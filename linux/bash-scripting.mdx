@@ -1,0 +1,750 @@
+---
+title: "Bash Scripting: Practical Patterns for Systems Work"
+sidebarTitle: "Bash Scripting"
+description: "Production-grade Bash scripting patterns: structure, error handling, argument parsing, logging, locking, and a full deployment script template."
+---
+
+Bash is the glue of Linux systems work. I have written scripts ranging from one-liners to thousand-line deployment frameworks, and the patterns below represent hard-won lessons about what holds up at 3 AM when something breaks. Bash is not a general-purpose language — use Python for anything that needs data structures, HTTP calls, or complex logic — but for process orchestration, system automation, and operations tooling, a well-structured Bash script beats almost anything for portability and transparency.
+
+---
+
+## Script Structure and Safety Flags
+
+Every non-trivial script should open with this header. The few extra seconds it takes are worth avoiding hours of debugging half-completed state.
+
+```bash
+#!/usr/bin/env bash
+# ============================================================
+# Script:  deploy-app.sh
+# Purpose: Deploy application artifacts to target host
+# Author:  Valeriy Khashkovskiy
+# Usage:   ./deploy-app.sh [-e ENV] [-v VERSION] [-h]
+# ============================================================
+
+set -euo pipefail
+# -e  exit immediately on any non-zero command
+# -u  treat unset variables as errors
+# -o pipefail  pipeline fails if any command in it fails
+
+IFS=$'\n\t'
+# Safer default field separator — avoids word-splitting on spaces
+```
+
+<Accordion title="Why each flag matters (with examples)">
+  **`set -e`** — Without this, scripts happily continue after a failed `cp` or `curl`. With it, they stop and let you investigate.
+
+  **`set -u`** — Catches typos in variable names. `rm -rf $TMPDI/` (note the typo) would become `rm -rf /` without this flag.
+
+  **`set -o pipefail`** — Without this, `cat missing_file.txt | grep foo` returns exit code 0 because `grep` succeeded — even though `cat` failed.
+
+  **`IFS=$'\n\t'`** — The default `IFS` includes space, which causes word-splitting on filenames with spaces. Changing it prevents most quoting bugs.
+</Accordion>
+
+---
+
+## Variables, Arrays, and String Operations
+
+<CodeGroup>
+
+```bash Variables
+# Always quote variable expansions
+NAME="Valeriy"
+echo "Hello, ${NAME}!"       # prefer ${} syntax for clarity
+
+# Default values
+LOG_DIR="${LOG_DIR:-/var/log/app}"    # use default if unset or empty
+PORT="${PORT:=8080}"                   # assign default if unset
+
+# Read-only constants
+readonly MAX_RETRIES=3
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Command substitution
+CURRENT_DATE=$(date +%Y%m%d)
+HOSTNAME=$(hostname -f)
+RUNNING_PROCS=$(ps aux | wc -l)
+```
+
+```bash Arrays
+# Indexed arrays
+SERVERS=("web01" "web02" "web03" "db01")
+
+echo "${SERVERS[0]}"           # first element
+echo "${SERVERS[@]}"           # all elements
+echo "${#SERVERS[@]}"          # array length
+echo "${SERVERS[@]:1:2}"       # slice: elements 1 and 2
+
+# Append to array
+SERVERS+=("cache01")
+
+# Iterate
+for server in "${SERVERS[@]}"; do
+    echo "Checking ${server}..."
+done
+
+# Associative arrays (Bash 4+)
+declare -A CONFIG
+CONFIG[db_host]="db.internal"
+CONFIG[db_port]="5432"
+CONFIG[db_name]="appdb"
+
+echo "${CONFIG[db_host]}"
+for key in "${!CONFIG[@]}"; do
+    echo "${key} = ${CONFIG[$key]}"
+done
+```
+
+```bash String operations
+STR="Hello, World!"
+
+echo "${#STR}"                 # length: 13
+echo "${STR,,}"                # lowercase: hello, world!
+echo "${STR^^}"                # uppercase: HELLO, WORLD!
+
+# Substrings
+echo "${STR:0:5}"              # Hello
+echo "${STR: -6}"              # World!
+
+# Pattern removal
+FILE="archive-2024-01-15.tar.gz"
+echo "${FILE%.tar.gz}"         # strip shortest suffix: archive-2024-01-15
+echo "${FILE%%.*}"             # strip longest suffix:  archive-2024-01-15
+echo "${FILE#archive-}"        # strip prefix: 2024-01-15.tar.gz
+
+# Substitution
+URL="http://old-host.example.com/path"
+echo "${URL/old-host/new-host}"          # replace first match
+echo "${URL//example/EXAMPLE}"           # replace all matches
+```
+
+</CodeGroup>
+
+---
+
+## Conditionals
+
+<Tabs>
+  <Tab title="if / elif / else">
+    ```bash
+    # File / path tests
+    if [[ -f /etc/app.conf ]]; then
+        echo "Config exists"
+    elif [[ -d /etc/app ]]; then
+        echo "Directory exists but no config file"
+    else
+        echo "Neither found"
+    fi
+
+    # String comparisons
+    if [[ "${ENVIRONMENT}" == "production" ]]; then
+        echo "Running in production — extra care!"
+    elif [[ -z "${ENVIRONMENT}" ]]; then
+        echo "ENVIRONMENT is empty"
+    fi
+
+    # Numeric comparisons — use (( )) for arithmetic
+    FREE_MB=$(free -m | awk '/^Mem:/{print $7}')
+    if (( FREE_MB < 512 )); then
+        echo "WARNING: Low memory: ${FREE_MB} MB available"
+    fi
+
+    # Combining conditions
+    if [[ -f "${LOCKFILE}" && -s "${LOCKFILE}" ]]; then
+        echo "Lockfile exists and is non-empty"
+    fi
+
+    # Common test flags
+    # -f  regular file        -d  directory
+    # -e  exists              -r  readable
+    # -w  writable            -x  executable
+    # -s  non-empty file      -L  symlink
+    # -z  empty string        -n  non-empty string
+    ```
+  </Tab>
+  <Tab title="case">
+    ```bash
+    case "${ENVIRONMENT}" in
+        prod|production)
+            REPLICAS=3
+            LOG_LEVEL="warn"
+            ;;
+        staging|stage)
+            REPLICAS=2
+            LOG_LEVEL="info"
+            ;;
+        dev|development|"")
+            REPLICAS=1
+            LOG_LEVEL="debug"
+            ;;
+        *)
+            echo "Unknown environment: ${ENVIRONMENT}" >&2
+            exit 1
+            ;;
+    esac
+
+    # case on command output
+    OS=$(uname -s)
+    case "${OS}" in
+        Linux)   PKG_CMD="dnf"  ;;
+        FreeBSD) PKG_CMD="pkg"  ;;
+        Darwin)  PKG_CMD="brew" ;;
+        *)
+            echo "Unsupported OS: ${OS}" >&2
+            exit 1
+            ;;
+    esac
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Loops
+
+<CodeGroup>
+
+```bash for loops
+# Iterate over a list
+for env in dev staging production; do
+    echo "Deploying to ${env}..."
+done
+
+# Iterate over array
+for server in "${SERVERS[@]}"; do
+    ssh "${server}" "sudo systemctl restart app"
+done
+
+# C-style numeric loop
+for (( i=1; i<=10; i++ )); do
+    echo "Attempt ${i}"
+done
+
+# Iterate over files
+for conf in /etc/app/*.conf; do
+    [[ -f "${conf}" ]] || continue    # skip if glob matched nothing
+    echo "Processing ${conf}"
+done
+
+# Iterate over command output lines
+while IFS= read -r line; do
+    echo "Processing: ${line}"
+done < <(find /var/data -name "*.json" -mtime -1)
+```
+
+```bash while / until loops
+# Poll until a service is ready
+RETRIES=0
+MAX_RETRIES=12
+until curl -sf http://localhost:8080/health; do
+    (( RETRIES++ ))
+    if (( RETRIES >= MAX_RETRIES )); then
+        echo "Service did not start after ${MAX_RETRIES} attempts" >&2
+        exit 1
+    fi
+    echo "Waiting for service... (${RETRIES}/${MAX_RETRIES})"
+    sleep 5
+done
+
+# Process lines from a file
+while IFS= read -r -u 3 line; do
+    [[ "${line}" =~ ^# ]] && continue    # skip comments
+    [[ -z "${line}" ]]    && continue    # skip empty lines
+    echo "Server: ${line}"
+done 3< servers.txt
+```
+
+```bash Loop control
+for i in {1..100}; do
+    (( i % 10 == 0 )) && echo "Checkpoint: ${i}"
+    (( i == 50 )) && break        # exit loop
+    (( i % 2 == 0 )) && continue  # skip even numbers
+    echo "${i}"
+done
+```
+
+</CodeGroup>
+
+---
+
+## Functions
+
+<CodeGroup>
+
+```bash Basics
+# Define before calling
+log() {
+    local level="${1}"
+    local message="${2}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] ${message}" | tee -a "${LOG_FILE:-/tmp/script.log}"
+}
+
+die() {
+    log "ERROR" "${1}"
+    exit "${2:-1}"
+}
+
+# Call
+log "INFO" "Starting deployment"
+die "Config file not found" 2
+```
+
+```bash Return values and local scope
+# Functions return exit codes, not values
+# Use local to avoid polluting global scope
+get_free_memory_mb() {
+    local free_mb
+    free_mb=$(free -m | awk '/^Mem:/{print $7}')
+    echo "${free_mb}"    # "return" a value via stdout
+}
+
+# Capture output
+FREE=$(get_free_memory_mb)
+echo "Available memory: ${FREE} MB"
+
+# Return codes
+is_service_running() {
+    local service_name="${1}"
+    systemctl is-active --quiet "${service_name}"
+    # returns 0 if active, non-zero otherwise
+}
+
+if is_service_running "nginx"; then
+    echo "nginx is up"
+fi
+```
+
+```bash Reusable utility functions
+require_root() {
+    if (( EUID != 0 )); then
+        die "This script must be run as root" 1
+    fi
+}
+
+require_command() {
+    local cmd="${1}"
+    if ! command -v "${cmd}" &>/dev/null; then
+        die "Required command not found: ${cmd}" 127
+    fi
+}
+
+retry() {
+    local attempts="${1}"; shift
+    local delay="${1}";    shift
+    local n=0
+
+    until "$@"; do
+        (( n++ ))
+        if (( n >= attempts )); then
+            echo "Command failed after ${attempts} attempts: $*" >&2
+            return 1
+        fi
+        echo "Attempt ${n} failed. Retrying in ${delay}s..."
+        sleep "${delay}"
+    done
+}
+
+# Usage
+retry 3 5 curl -sf http://api.example.com/health
+```
+
+</CodeGroup>
+
+---
+
+## Error Handling and Exit Codes
+
+<CodeGroup>
+
+```bash Traps
+# Always-run cleanup on exit
+TMPDIR_WORK=$(mktemp -d)
+cleanup() {
+    rm -rf "${TMPDIR_WORK}"
+    log "INFO" "Cleanup complete"
+}
+trap cleanup EXIT
+
+# Handle interrupts gracefully
+trap 'log "WARN" "Caught SIGINT — aborting"; exit 130' INT
+trap 'log "WARN" "Caught SIGTERM — aborting"; exit 143' TERM
+
+# Debug trap — print each command before executing (useful during dev)
+# trap 'echo "DEBUG: line ${LINENO}: ${BASH_COMMAND}"' DEBUG
+```
+
+```bash Exit codes
+# Standard POSIX exit codes
+# 0    success
+# 1    general error
+# 2    misuse of shell built-in
+# 126  command found but not executable
+# 127  command not found
+# 128+N  fatal signal N (e.g., 130 = SIGINT, 143 = SIGTERM)
+
+# Propagate exit codes explicitly
+deploy_app() {
+    local exit_code=0
+
+    rsync -az /opt/release/ app@web01:/opt/app/ || exit_code=$?
+    if (( exit_code != 0 )); then
+        log "ERROR" "rsync failed with exit code ${exit_code}"
+        return "${exit_code}"
+    fi
+
+    ssh app@web01 "sudo systemctl restart app" || exit_code=$?
+    return "${exit_code}"
+}
+```
+
+```bash set -e workarounds
+# Some commands legitimately return non-zero
+# Use || true to allow failure
+grep "pattern" file.txt || true
+
+# Or use an explicit check
+if ! grep -q "pattern" file.txt; then
+    echo "Pattern not found — continuing"
+fi
+
+# Subshell failures with set -e
+(
+    cd /some/dir
+    run_something
+) || die "Subshell block failed"
+```
+
+</CodeGroup>
+
+---
+
+## Common Patterns
+
+<Tabs>
+  <Tab title="Argument Parsing">
+    ```bash
+    usage() {
+        cat <<EOF
+    Usage: $(basename "$0") [OPTIONS]
+
+    Options:
+      -e, --env ENV        Target environment (dev|staging|prod) [required]
+      -v, --version VER    Application version to deploy [required]
+      -n, --dry-run        Simulate without making changes
+      -h, --help           Show this help
+
+    Examples:
+      $(basename "$0") -e production -v 2.4.1
+      $(basename "$0") --env staging --version 2.4.0 --dry-run
+    EOF
+    }
+
+    ENVIRONMENT=""
+    VERSION=""
+    DRY_RUN=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -e|--env)
+                ENVIRONMENT="${2}"
+                shift 2
+                ;;
+            -v|--version)
+                VERSION="${2}"
+                shift 2
+                ;;
+            -n|--dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: ${1}" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    [[ -n "${ENVIRONMENT}" ]] || { echo "Error: -e/--env is required" >&2; usage >&2; exit 2; }
+    [[ -n "${VERSION}" ]]     || { echo "Error: -v/--version is required" >&2; usage >&2; exit 2; }
+    ```
+  </Tab>
+  <Tab title="Logging">
+    ```bash
+    readonly LOG_FILE="/var/log/app/deploy-$(date +%Y%m%d-%H%M%S).log"
+    mkdir -p "$(dirname "${LOG_FILE}")"
+
+    log() {
+        local level="${1}"; shift
+        local message="$*"
+        local ts
+        ts=$(date '+%Y-%m-%d %H:%M:%S')
+        local line="[${ts}] [$$] [${level}] ${message}"
+
+        # Write to log file
+        echo "${line}" >> "${LOG_FILE}"
+
+        # Also print to stderr for WARN/ERROR, stdout for others
+        case "${level}" in
+            ERROR|WARN) echo "${line}" >&2 ;;
+            *)           echo "${line}"     ;;
+        esac
+    }
+
+    log_info()  { log "INFO"  "$@"; }
+    log_warn()  { log "WARN"  "$@"; }
+    log_error() { log "ERROR" "$@"; }
+    log_debug() { [[ "${DEBUG:-false}" == "true" ]] && log "DEBUG" "$@" || true; }
+    ```
+  </Tab>
+  <Tab title="Locking">
+    ```bash
+    # Prevent concurrent runs of the same script
+    LOCKFILE="/var/run/$(basename "$0" .sh).lock"
+
+    acquire_lock() {
+        if ! mkdir "${LOCKFILE}" 2>/dev/null; then
+            local existing_pid
+            existing_pid=$(cat "${LOCKFILE}/pid" 2>/dev/null || echo "unknown")
+            if kill -0 "${existing_pid}" 2>/dev/null; then
+                die "Script already running (PID ${existing_pid}). Aborting." 1
+            else
+                log "WARN" "Stale lockfile found (PID ${existing_pid} dead). Removing."
+                rm -rf "${LOCKFILE}"
+                mkdir "${LOCKFILE}"
+            fi
+        fi
+        echo $$ > "${LOCKFILE}/pid"
+    }
+
+    release_lock() {
+        rm -rf "${LOCKFILE}"
+    }
+
+    trap 'release_lock; exit' EXIT INT TERM
+
+    acquire_lock
+    log "INFO" "Lock acquired (PID $$)"
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Useful One-Liners and Idioms
+
+```bash
+# Print script name and location
+echo "Running: $(basename "$0") from ${SCRIPT_DIR}"
+
+# Confirm before destructive action
+read -r -p "Delete all logs in /var/log/app? [y/N] " confirm
+[[ "${confirm,,}" == "y" ]] || { echo "Aborted."; exit 0; }
+
+# Here-doc for config file generation
+cat > /etc/app/config.ini <<EOF
+[database]
+host = ${DB_HOST}
+port = ${DB_PORT}
+name = ${DB_NAME}
+EOF
+
+# Run in parallel with wait
+for server in "${SERVERS[@]}"; do
+    ssh "${server}" "sudo systemctl restart app" &
+done
+wait    # block until all background jobs finish
+echo "All servers restarted"
+
+# Idempotent directory + ownership setup
+install -d -m 755 -o app -g app /opt/app/{bin,conf,logs,tmp}
+
+# Check if running inside a container
+is_container() {
+    [[ -f /.dockerenv ]] || grep -q 'docker\|lxc' /proc/1/cgroup 2>/dev/null
+}
+
+# Extract version from file
+VERSION=$(grep -oP '(?<=version = ")[^"]+' setup.cfg)
+
+# Safe temp file that auto-cleans
+TMPFILE=$(mktemp /tmp/report.XXXXXX)
+trap 'rm -f "${TMPFILE}"' EXIT
+```
+
+---
+
+## Complete Deployment Script Template
+
+<Steps>
+  <Step title="Save and make executable">
+    ```bash
+    chmod +x deploy-app.sh
+    ```
+  </Step>
+  <Step title="Review the full template">
+    ```bash
+    #!/usr/bin/env bash
+    # ============================================================
+    # deploy-app.sh — Application deployment script
+    # ============================================================
+    set -euo pipefail
+    IFS=$'\n\t'
+
+    # ── Constants ────────────────────────────────────────────────
+    readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    readonly SCRIPT_NAME="$(basename "$0")"
+    readonly LOG_FILE="/var/log/app/deploy-$(date +%Y%m%d-%H%M%S).log"
+    readonly LOCKFILE="/var/run/${SCRIPT_NAME%.sh}.lock"
+    readonly DEPLOY_USER="app"
+    readonly DEPLOY_BASE="/opt/app"
+
+    # ── Logging ──────────────────────────────────────────────────
+    mkdir -p "$(dirname "${LOG_FILE}")"
+
+    log() {
+        local level="${1}"; shift
+        local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
+        local line="[${ts}] [${level}] $*"
+        echo "${line}" >> "${LOG_FILE}"
+        case "${level}" in
+            ERROR|WARN) echo "${line}" >&2 ;;
+            *) echo "${line}" ;;
+        esac
+    }
+
+    die() { log "ERROR" "$1"; exit "${2:-1}"; }
+
+    # ── Cleanup / Locking ────────────────────────────────────────
+    cleanup() {
+        rm -rf "${LOCKFILE}"
+        log "INFO" "Cleanup done. Full log: ${LOG_FILE}"
+    }
+    trap cleanup EXIT
+    trap 'die "Interrupted" 130' INT TERM
+
+    if ! mkdir "${LOCKFILE}" 2>/dev/null; then
+        die "Another deployment is in progress. Aborting."
+    fi
+    echo $$ > "${LOCKFILE}/pid"
+
+    # ── Usage ────────────────────────────────────────────────────
+    usage() {
+        cat <<EOF
+    Usage: ${SCRIPT_NAME} -e ENV -v VERSION [-n] [-h]
+      -e ENV        Environment: dev | staging | prod
+      -v VERSION    Version tag to deploy (e.g. 2.4.1)
+      -n            Dry-run (no changes made)
+      -h            Help
+    EOF
+    }
+
+    # ── Argument Parsing ─────────────────────────────────────────
+    ENVIRONMENT=""
+    VERSION=""
+    DRY_RUN=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -e) ENVIRONMENT="$2"; shift 2 ;;
+            -v) VERSION="$2";     shift 2 ;;
+            -n) DRY_RUN=true;     shift   ;;
+            -h) usage; exit 0              ;;
+            *)  usage >&2; die "Unknown option: $1" 2 ;;
+        esac
+    done
+
+    [[ -n "${ENVIRONMENT}" ]] || { usage >&2; die "-e ENV is required" 2; }
+    [[ -n "${VERSION}" ]]     || { usage >&2; die "-v VERSION is required" 2; }
+
+    # ── Pre-flight Checks ────────────────────────────────────────
+    log "INFO" "=== Deployment starting: ${SCRIPT_NAME} v${VERSION} → ${ENVIRONMENT} ==="
+    log "INFO" "Dry-run: ${DRY_RUN}"
+
+    for cmd in rsync ssh systemctl; do
+        command -v "${cmd}" &>/dev/null || die "Required command not found: ${cmd}" 127
+    done
+
+    case "${ENVIRONMENT}" in
+        prod|production)
+            SERVERS=("web01.prod" "web02.prod")
+            ;;
+        staging)
+            SERVERS=("web01.staging")
+            ;;
+        dev|development)
+            SERVERS=("web01.dev")
+            ;;
+        *)
+            die "Unknown environment: ${ENVIRONMENT}" 2
+            ;;
+    esac
+
+    # ── Deploy Function ──────────────────────────────────────────
+    deploy_to_server() {
+        local server="${1}"
+        log "INFO" "Deploying to ${server}..."
+
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log "INFO" "[DRY-RUN] Would rsync to ${server}"
+            return 0
+        fi
+
+        rsync -az --delete \
+            "/opt/releases/${VERSION}/" \
+            "${DEPLOY_USER}@${server}:${DEPLOY_BASE}/current/" \
+            || die "rsync to ${server} failed" 1
+
+        ssh "${DEPLOY_USER}@${server}" \
+            "sudo systemctl restart app && systemctl is-active --quiet app" \
+            || die "Service restart failed on ${server}" 1
+
+        log "INFO" "Successfully deployed to ${server}"
+    }
+
+    # ── Main ─────────────────────────────────────────────────────
+    for server in "${SERVERS[@]}"; do
+        deploy_to_server "${server}"
+    done
+
+    log "INFO" "=== Deployment complete: ${VERSION} → ${ENVIRONMENT} ==="
+    exit 0
+    ```
+  </Step>
+  <Step title="Test with dry-run first">
+    ```bash
+    ./deploy-app.sh -e staging -v 2.4.1 -n
+    ```
+  </Step>
+  <Step title="Run for real">
+    ```bash
+    ./deploy-app.sh -e staging -v 2.4.1
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `readonly SCRIPT_DIR` pattern using `BASH_SOURCE[0]` is the correct way to get the script's own directory even when the script is sourced or called via a symlink. Never use `$0` alone for this purpose.
+</Note>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Linux Essentials" icon="terminal" href="linux/essentials">
+    The core commands your scripts will call.
+  </Card>
+  <Card title="Troubleshooting" icon="bug" href="linux/troubleshooting">
+    Debug failing scripts and the services they manage.
+  </Card>
+  <Card title="GitLab CI/CD" icon="code-branch" href="devops/gitlab-cicd">
+    Integrate these scripts into automated pipelines.
+  </Card>
+  <Card title="Docker" icon="docker" href="devops/docker">
+    Containerise the applications your scripts deploy.
+  </Card>
+</CardGroup>

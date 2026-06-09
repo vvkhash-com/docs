@@ -1,0 +1,521 @@
+---
+title: "Linux Networking for Sysadmins and DevOps Engineers"
+sidebarTitle: "Networking"
+description: "Practical Linux networking: diagnostics, interface management, firewall rules, SSH power-user tips, and DNS troubleshooting workflows for operations use."
+---
+
+Networking problems are responsible for a disproportionate share of outages and escalations. In over two decades of systems work I have found that most incidents boil down to one of three root causes: a routing or firewall rule that is wrong, a DNS entry that is stale or missing, or a service that is not actually listening on the expected address and port. The tools and workflows on this page address all three — methodically, without guessing.
+
+---
+
+## Network Diagnostics
+
+<Tabs>
+  <Tab title="Connectivity Testing">
+    ```bash
+    # Basic reachability
+    ping -c 4 8.8.8.8                   # 4 packets to Google DNS
+    ping -c 4 -I eth0 10.0.0.1          # bind to specific interface
+    ping6 -c 4 2001:4860:4860::8888     # IPv6
+
+    # Trace path to destination
+    traceroute 8.8.8.8                  # UDP probes by default
+    traceroute -T -p 443 google.com     # TCP to port 443 (bypasses ICMP blocks)
+    traceroute -I 8.8.8.8               # ICMP (like Windows tracert)
+
+    # mtr — combines ping + traceroute, live stats
+    mtr --report --report-cycles 20 8.8.8.8   # 20-cycle report mode
+    mtr -n --tcp --port 443 api.example.com   # TCP, no DNS resolution
+
+    # curl — test HTTP/S endpoints
+    curl -v https://api.example.com/health              # verbose output
+    curl -o /dev/null -s -w "%{http_code}\n" http://... # just the status code
+    curl -I https://example.com                         # HEAD request (headers only)
+    curl --max-time 5 -sf http://localhost:8080/health  # timeout + silent + fail on 4xx/5xx
+    curl -k https://self-signed.internal/api            # ignore cert errors
+    curl --resolve api.example.com:443:10.0.0.5 https://api.example.com/  # override DNS
+
+    # wget — alternative for downloading
+    wget -qO- http://checkip.amazonaws.com             # get external IP
+    wget --spider https://example.com                  # check URL without downloading
+    ```
+  </Tab>
+  <Tab title="DNS Lookups">
+    ```bash
+    # dig — the definitive DNS tool
+    dig google.com                       # A record lookup
+    dig google.com AAAA                  # IPv6 address
+    dig google.com MX                    # mail exchangers
+    dig google.com NS                    # authoritative nameservers
+    dig google.com TXT                   # TXT records (SPF, DKIM, etc.)
+    dig -x 8.8.8.8                       # reverse lookup (PTR)
+    dig @1.1.1.1 google.com              # query specific resolver (Cloudflare)
+    dig +short google.com                # minimal output (just IPs)
+    dig +trace google.com                # full delegation path from root
+    dig +nocmd +noall +answer google.com # clean answer-only output
+
+    # nslookup — simpler, available everywhere
+    nslookup google.com
+    nslookup google.com 8.8.8.8         # against specific server
+    nslookup -type=MX example.com
+
+    # host — quick lookups
+    host google.com
+    host -t MX gmail.com
+    host 8.8.8.8                        # reverse lookup
+
+    # Check which DNS server is being used
+    cat /etc/resolv.conf
+    resolvectl status                   # systemd-resolved
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Interface Management with `ip`
+
+<Warning>
+  The legacy `ifconfig` / `route` / `netstat` tools from `net-tools` are obsolete. Use `ip` and `ss` from the `iproute2` suite on any modern Linux system.
+</Warning>
+
+<CodeGroup>
+
+```bash ip addr — addresses
+ip addr show                         # all interfaces
+ip addr show eth0                    # specific interface
+ip addr show dev eth0                # same, explicit
+ip -4 addr show                      # IPv4 only
+ip -6 addr show                      # IPv6 only
+ip -br addr show                     # brief one-line-per-interface format
+
+# Add/remove address
+sudo ip addr add 192.168.1.10/24 dev eth0
+sudo ip addr del 192.168.1.10/24 dev eth0
+```
+
+```bash ip link — interfaces
+ip link show                         # all links (status, MAC, MTU)
+ip -br link show                     # brief
+ip link show up                      # only UP interfaces
+
+sudo ip link set eth0 up             # bring interface up
+sudo ip link set eth0 down           # take it down
+sudo ip link set eth0 mtu 9000       # jumbo frames
+sudo ip link set eth0 promisc on     # promiscuous mode (packet capture)
+```
+
+```bash ip route — routing
+ip route show                        # routing table
+ip route show default                # default gateway only
+ip route get 8.8.8.8                 # which route/interface for a destination
+
+sudo ip route add 10.10.0.0/24 via 192.168.1.1 dev eth0   # add static route
+sudo ip route del 10.10.0.0/24                              # remove route
+sudo ip route add default via 192.168.1.1                   # set default gateway
+```
+
+```bash ss — socket statistics
+ss -tlnp         # TCP listening sockets + process name
+ss -ulnp         # UDP listening sockets
+ss -tnp          # all TCP connections + process
+ss -s            # summary statistics
+
+# Filter by state or port
+ss -tnp state established
+ss -tnp dport = :443
+ss -tnp sport = :8080
+
+# Find what's using a port
+ss -tlnp | grep ':80 '
+```
+
+</CodeGroup>
+
+---
+
+## Firewall Management
+
+<Tabs>
+  <Tab title="firewalld (RHEL/CentOS/Fedora)">
+    ```bash
+    # Status
+    firewall-cmd --state
+    firewall-cmd --list-all               # active zone rules
+    firewall-cmd --list-all-zones         # all zones
+
+    # Allow a service (permanent = survives reboot)
+    firewall-cmd --permanent --add-service=http
+    firewall-cmd --permanent --add-service=https
+    firewall-cmd --reload                 # apply permanent changes
+
+    # Allow a specific port
+    firewall-cmd --permanent --add-port=8080/tcp
+    firewall-cmd --permanent --remove-port=8080/tcp
+
+    # Allow a source IP
+    firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" accept'
+
+    # Port forwarding
+    firewall-cmd --permanent --add-forward-port=port=80:proto=tcp:toport=8080
+
+    # Reload and verify
+    firewall-cmd --reload
+    firewall-cmd --list-all
+    ```
+  </Tab>
+  <Tab title="ufw (Ubuntu/Debian)">
+    ```bash
+    # Status
+    ufw status verbose
+    ufw status numbered         # show rule numbers for deletion
+
+    # Enable / disable
+    ufw enable
+    ufw disable
+
+    # Allow / deny rules
+    ufw allow 22/tcp            # SSH
+    ufw allow 80/tcp            # HTTP
+    ufw allow 443               # HTTPS (tcp implied)
+    ufw allow from 10.0.0.0/8 to any port 5432   # PostgreSQL from internal
+
+    ufw deny 23/tcp             # block telnet
+    ufw delete 3                # delete rule by number
+
+    # Reset all rules
+    ufw reset
+    ```
+  </Tab>
+  <Tab title="iptables (universal)">
+    ```bash
+    # List all rules with line numbers
+    iptables -L -n -v --line-numbers
+    iptables -L INPUT -n -v --line-numbers
+
+    # Allow established connections (stateful)
+    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+    # Allow SSH
+    iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
+    # Allow HTTP/S
+    iptables -A INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
+
+    # Block an IP
+    iptables -A INPUT -s 203.0.113.45 -j DROP
+
+    # Drop everything else (default deny — put this LAST)
+    iptables -A INPUT -j DROP
+
+    # Delete a rule by number
+    iptables -L INPUT --line-numbers
+    iptables -D INPUT 5
+
+    # Save rules (persist across reboots)
+    # RHEL/CentOS:
+    service iptables save
+    # Debian/Ubuntu:
+    iptables-save > /etc/iptables/rules.v4
+    ```
+  </Tab>
+  <Tab title="nftables (modern)">
+    ```bash
+    # List rules
+    nft list ruleset
+
+    # Add a simple rule (allow SSH)
+    nft add rule inet filter input tcp dport 22 accept
+
+    # Example minimal ruleset in /etc/nftables.conf
+    cat > /etc/nftables.conf <<'EOF'
+    #!/usr/sbin/nft -f
+    flush ruleset
+
+    table inet filter {
+        chain input {
+            type filter hook input priority 0; policy drop;
+            iifname lo accept
+            ct state established,related accept
+            tcp dport {22, 80, 443} accept
+            icmp type echo-request accept
+        }
+        chain forward {
+            type filter hook forward priority 0; policy drop;
+        }
+        chain output {
+            type filter hook output priority 0; policy accept;
+        }
+    }
+    EOF
+
+    systemctl enable --now nftables
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## SSH Power-User Tips
+
+<CodeGroup>
+
+```bash Key setup
+# Generate ED25519 key (preferred over RSA since ~2014)
+ssh-keygen -t ed25519 -C "valeriy@hostname-$(date +%Y%m%d)" -f ~/.ssh/id_ed25519
+
+# Copy public key to remote server
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@remote-host
+
+# Manual alternative (when ssh-copy-id is unavailable)
+cat ~/.ssh/id_ed25519.pub | ssh user@remote-host \
+    "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+
+# Start ssh-agent and add key
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+ssh-add -l     # list loaded keys
+```
+
+```bash SSH config file (~/.ssh/config)
+# Global defaults
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+
+# Production jump host
+Host bastion
+    HostName bastion.prod.example.com
+    User deploy
+    Port 22
+
+# Internal servers via jump host
+Host *.internal
+    ProxyJump bastion
+    User admin
+
+# Specific host with alias
+Host db01
+    HostName 10.10.1.50
+    User postgres
+    Port 5432
+    LocalForward 15432 localhost:5432
+
+# Usage:
+# ssh db01                       # connect with all settings applied
+# ssh -F /dev/null user@host     # ignore config file
+```
+
+```bash Port forwarding
+# Local forward: access remote service locally
+# Access remote PostgreSQL on local port 15432
+ssh -L 15432:localhost:5432 user@db-host -N &
+
+# Remote forward: expose local port on remote server
+# Expose local port 8080 on remote host's port 80
+ssh -R 80:localhost:8080 user@public-server -N
+
+# Dynamic (SOCKS proxy): tunnel all traffic
+ssh -D 1080 -N user@proxy-server &
+# Then: curl --socks5 localhost:1080 http://internal-site/
+
+# X11 forwarding (GUI apps over SSH)
+ssh -X user@remote-host xterm
+```
+
+```bash scp / rsync
+# scp — simple copies
+scp file.txt user@remote:/tmp/
+scp user@remote:/etc/nginx/nginx.conf ./
+scp -r /local/dir user@remote:/opt/
+scp -P 2222 file.txt user@remote:/tmp/    # non-standard port
+
+# rsync — efficient sync (skips unchanged files)
+rsync -avz /local/path/ user@remote:/remote/path/
+rsync -avz --delete /local/ user@remote:/remote/    # mirror (deletes extras)
+rsync -avz --exclude='*.log' --exclude='.git/' src/ dst/
+rsync -n -avz src/ dst/           # --dry-run: show what would change
+
+# rsync over non-standard SSH port
+rsync -avz -e "ssh -p 2222" /src/ user@remote:/dst/
+```
+
+</CodeGroup>
+
+<Tip>
+  Add `ControlMaster auto`, `ControlPath ~/.ssh/cm-%r@%h:%p`, and `ControlPersist 10m` to your `~/.ssh/config` to multiplex SSH connections. After the first login, subsequent connections to the same host are near-instant with no re-authentication.
+</Tip>
+
+---
+
+## Common Port Reference
+
+| Port | Protocol | Service |
+|------|----------|---------|
+| 22 | TCP | SSH |
+| 25 | TCP | SMTP |
+| 53 | TCP/UDP | DNS |
+| 80 | TCP | HTTP |
+| 110 | TCP | POP3 |
+| 143 | TCP | IMAP |
+| 443 | TCP | HTTPS |
+| 587 | TCP | SMTP (submission) |
+| 3306 | TCP | MySQL / MariaDB |
+| 5432 | TCP | PostgreSQL |
+| 5672 | TCP | RabbitMQ AMQP |
+| 6379 | TCP | Redis |
+| 8080 | TCP | HTTP alt / app servers |
+| 8443 | TCP | HTTPS alt |
+| 9090 | TCP | Prometheus |
+| 9200 | TCP | Elasticsearch HTTP |
+| 27017 | TCP | MongoDB |
+
+---
+
+## DNS Troubleshooting Steps
+
+<Steps>
+  <Step title="Check the local resolver configuration">
+    ```bash
+    cat /etc/resolv.conf
+    # Look for: nameserver, search, domain directives
+
+    resolvectl status           # systemd-resolved details
+    resolvectl query google.com # query through systemd-resolved
+    ```
+  </Step>
+  <Step title="Verify basic name resolution">
+    ```bash
+    # Does the host resolve at all?
+    dig +short google.com
+
+    # If that fails, try a public resolver directly
+    dig @8.8.8.8 +short google.com
+    dig @1.1.1.1 +short google.com
+
+    # If direct resolvers work but /etc/resolv.conf does not,
+    # the problem is local resolver configuration or caching
+    ```
+  </Step>
+  <Step title="Check for DNS caching issues">
+    ```bash
+    # Flush systemd-resolved cache
+    resolvectl flush-caches
+    systemd-resolve --flush-caches
+
+    # Flush nscd cache (if running)
+    nscd -i hosts
+
+    # Verify TTL on the record (low TTL = propagating change)
+    dig +nocmd +noall +answer +ttl google.com
+    ```
+  </Step>
+  <Step title="Trace the full delegation chain">
+    ```bash
+    # Follow the resolution from root servers down
+    dig +trace example.com
+
+    # Check all authoritative nameservers agree
+    for ns in $(dig +short NS example.com); do
+        echo "=== ${ns} ==="
+        dig @"${ns}" example.com A +short
+    done
+    ```
+  </Step>
+  <Step title="Diagnose split-horizon / internal DNS">
+    ```bash
+    # Compare internal vs external resolution
+    dig @10.0.0.53 internal-app.company.com    # internal DNS
+    dig @8.8.8.8   internal-app.company.com    # external DNS
+
+    # Check search domain is set correctly
+    cat /etc/resolv.conf | grep search
+
+    # Test with FQDN (trailing dot forces full lookup)
+    dig internal-app.company.com.              # FQDN
+    ```
+  </Step>
+  <Step title="Inspect /etc/hosts for overrides">
+    ```bash
+    grep -v '^#' /etc/hosts | grep -v '^$'
+    # Entries here override DNS — a common source of surprises
+    getent hosts hostname   # shows effective resolution order
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Quick Network Diagnostics Checklist
+
+<Accordion title="Cannot reach external host — checklist">
+  ```bash
+  # 1. Check interface is up and has an IP
+  ip -br addr show
+
+  # 2. Check default route exists
+  ip route show default
+
+  # 3. Ping the default gateway
+  GATEWAY=$(ip route show default | awk '/default/{print $3}')
+  ping -c 3 "${GATEWAY}"
+
+  # 4. Ping a public IP (bypasses DNS)
+  ping -c 3 8.8.8.8
+
+  # 5. Test DNS resolution
+  dig +short google.com
+
+  # 6. Test HTTP connectivity
+  curl -sv --max-time 5 https://google.com 2>&1 | head -30
+
+  # 7. Check local firewall
+  iptables -L OUTPUT -n -v
+  firewall-cmd --list-all   # if using firewalld
+  ```
+</Accordion>
+
+<Accordion title="Service port not accessible — checklist">
+  ```bash
+  # 1. Is the service listening locally?
+  ss -tlnp | grep ':8080'
+
+  # 2. Is it bound to 0.0.0.0 or only 127.0.0.1?
+  ss -tlnp | grep ':8080'
+  # 127.0.0.1 means not reachable from outside
+
+  # 3. Test local loopback
+  curl -v http://127.0.0.1:8080/health
+
+  # 4. Test from the server's external IP
+  curl -v http://$(curl -s checkip.amazonaws.com):8080/health
+
+  # 5. Check firewall
+  iptables -L INPUT -n -v | grep 8080
+
+  # 6. Test from a remote host
+  nc -zv remote-host 8080
+  telnet remote-host 8080
+  ```
+</Accordion>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Linux Essentials" icon="terminal" href="linux/essentials">
+    Core commands including `ss`, `ip`, and file system tools.
+  </Card>
+  <Card title="Troubleshooting" icon="bug" href="linux/troubleshooting">
+    Systematic workflows when networking is part of a larger incident.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Kubernetes networking — Services, Ingress, and network policies.
+  </Card>
+  <Card title="AWS" icon="aws" href="cloud/aws">
+    VPC, security groups, and Route 53 in the cloud context.
+  </Card>
+</CardGroup>

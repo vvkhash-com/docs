@@ -1,0 +1,559 @@
+---
+title: "Systematic Linux Troubleshooting: Workflows and Tools"
+sidebarTitle: "Troubleshooting"
+description: "Proven Linux troubleshooting methodology: CPU, memory, disk, service failures, log analysis, OOM killer, and network debugging for real incidents."
+---
+
+Effective troubleshooting is not about knowing every command. It is about having a methodology that stops you from thrashing and helps you move from observation to root cause as efficiently as possible. After two-plus decades of on-call work — from bare-metal RHEL servers to containerised microservices — the discipline of *observe first, hypothesize second, test third* saves more time than any individual tool. This page captures the workflows I actually follow during incidents, not an exhaustive reference.
+
+---
+
+## General Troubleshooting Methodology
+
+<Steps>
+  <Step title="Observe — establish ground truth before touching anything">
+    Resist the urge to restart services immediately. Gather data first.
+
+    ```bash
+    # What is happening right now?
+    uptime                        # load average trend (1/5/15 min)
+    w                             # who is logged in + what they're running
+    dmesg -T | tail -50           # recent kernel messages
+    journalctl -xe --no-pager | tail -100   # systemd journal
+
+    # System-wide snapshot
+    vmstat 1 5                    # CPU, memory, I/O every second for 5s
+    iostat -xz 1 5                # per-device I/O stats
+    free -m                       # memory overview
+    df -hT                        # disk usage
+    ip -br addr show              # interface status
+    ```
+  </Step>
+  <Step title="Hypothesize — form a specific, testable statement">
+    A hypothesis is not "something is wrong with the database." It is: "PostgreSQL is not accepting new connections because the connection pool is exhausted." Write it down. If you cannot state it precisely, you need more observation.
+  </Step>
+  <Step title="Test — one change at a time">
+    Change exactly one variable per test. Document what you changed, when, and what the result was. In a production incident this log is your audit trail.
+
+    ```bash
+    # Common test tools
+    strace -p <pid> -e trace=network    # system calls for a process
+    ltrace -p <pid>                      # library calls
+    lsof -p <pid>                        # open files + sockets for a process
+    tcpdump -i eth0 -n port 5432        # capture traffic on a port
+    ```
+  </Step>
+  <Step title="Fix — targeted and reversible when possible">
+    Apply the minimal fix. If you must restart a service, know why you're doing it and what you expect to change. Document the fix and the outcome.
+  </Step>
+  <Step title="Validate and monitor">
+    ```bash
+    # Confirm the fix held
+    journalctl -u app.service -n 50 --no-pager
+    tail -f /var/log/app/app.log
+    watch -n 2 'ss -tlnp | grep 8080'    # watch port status every 2s
+    ```
+  </Step>
+</Steps>
+
+---
+
+## High CPU Investigation
+
+<CodeGroup>
+
+```bash Identify CPU consumers
+# Top CPU processes right now
+ps aux --sort=-%cpu | head -15
+
+# Interactive live view (sort by CPU with 'P', memory with 'M')
+top
+
+# htop with tree view (shows parent-child relationships)
+htop -d 3      # refresh every 0.3s
+
+# Per-core CPU breakdown (press '1' in top to toggle)
+mpstat -P ALL 2 3    # 3 samples, 2-second interval, all CPUs
+```
+
+```bash Profile a specific process
+# How much CPU is a process using over time?
+pidstat -u -p <pid> 1 10       # 10 samples, 1s interval
+
+# What system calls is it making?
+strace -c -p <pid>             # summary of syscall frequency + time
+strace -T -p <pid>             # per-call time (verbose)
+
+# What libraries is it calling?
+perf top -p <pid>              # kernel perf — shows hot functions
+```
+
+```bash High load average investigation
+# High load ≠ high CPU. Load includes tasks waiting for I/O.
+# Distinguish CPU-bound from I/O-bound:
+vmstat 1 5
+# us = user, sy = kernel, wa = iowait
+# High wa% → I/O bottleneck, not CPU
+
+# Find processes in D state (uninterruptible sleep = waiting on I/O)
+ps aux | awk '$8 == "D" {print $0}'
+
+# Check I/O stats per device
+iostat -xz 1 5
+# Look for: util% near 100%, high await (ms), high r/s or w/s
+```
+
+</CodeGroup>
+
+<Note>
+  A load average of 1.0 on a single-core machine means the CPU is fully loaded. On a 16-core machine, 1.0 means virtually idle. Always divide load average by CPU core count to get a meaningful utilisation ratio. Check `nproc` or `lscpu` for core count.
+</Note>
+
+---
+
+## Memory Investigation
+
+<CodeGroup>
+
+```bash Memory overview
+free -m             # RAM + swap (avoid relying on "used" — includes cache)
+# Key field: "available" = what apps can actually use without swapping
+
+cat /proc/meminfo   # full details
+# MemAvailable, Cached, Buffers, SwapCached, AnonPages, Mapped
+
+# Is the system swapping?
+vmstat 1 5
+# si (swap in) / so (swap out) > 0 = swapping — investigate further
+swapon --show       # swap devices and usage
+
+# Top memory consumers
+ps aux --sort=-%mem | head -15
+```
+
+```bash Per-process memory
+# VSZ = virtual size (includes mmap'd files, not necessarily in RAM)
+# RSS = resident set size (actual RAM in use)
+# %MEM = RSS as % of total RAM
+ps -o pid,ppid,user,comm,vsz,rss,%mem --sort=-%mem | head -20
+
+# Detailed memory map for a process
+pmap -x <pid> | sort -k3 -rn | head -20
+cat /proc/<pid>/status | grep -E "Vm|Rss"
+
+# smem — more accurate accounting (shared vs private)
+smem -r -s rss | head -20
+```
+
+```bash Memory leak indicators
+# Growing RSS over time = likely leak
+watch -n 5 'ps -p <pid> -o rss='
+
+# Or log it for trend analysis
+while true; do
+    echo "$(date '+%H:%M:%S') RSS=$(ps -p <pid> -o rss= | tr -d ' ') kB"
+    sleep 10
+done | tee /tmp/mem_trend.log
+```
+
+</CodeGroup>
+
+---
+
+## Disk Space Issues
+
+<Tabs>
+  <Tab title="Find space consumers">
+    ```bash
+    # Where is disk being used?
+    df -hT                                  # overview of all filesystems
+    df -i                                   # inode usage (100% inodes = no new files)
+
+    # Drill down by directory size
+    du -sh /var/*          | sort -rh | head -20
+    du -sh /home/*         | sort -rh | head -10
+    du -sh /opt/*          | sort -rh | head -10
+
+    # Find the single largest directories under /var to 3 levels deep
+    du -h --max-depth=3 /var 2>/dev/null | sort -rh | head -30
+
+    # Find individual files larger than 500 MB
+    find / -xdev -size +500M -type f -exec ls -lh {} \; 2>/dev/null
+
+    # Find the 20 largest files anywhere
+    find / -xdev -type f -printf '%s %p\n' 2>/dev/null \
+        | sort -rn | head -20 | awk '{printf "%.1f MB  %s\n", $1/1048576, $2}'
+    ```
+  </Tab>
+  <Tab title="Deleted files still open">
+    ```bash
+    # A process can hold a file descriptor open after deletion.
+    # The disk space is not freed until the process closes/restarts.
+
+    # Find deleted files still held open (the key indicator)
+    lsof +L1
+    # +L1 = show files with link count < 1 (deleted but still open)
+
+    # Formatted output showing size
+    lsof +L1 | awk 'NR==1 || $NF ~ /deleted/ {print}'
+
+    # Identify the process and size
+    lsof +L1 | awk '{print $2, $9, $NF}' | sort -k1 -n
+
+    # Options:
+    # 1. Restart the process — space freed immediately
+    # 2. If you cannot restart, truncate the file descriptor:
+    #    > /proc/<pid>/fd/<fd_num>    # truncates without restarting
+    ```
+  </Tab>
+  <Tab title="Log rotation">
+    ```bash
+    # Check logrotate status
+    cat /var/lib/logrotate/status
+    logrotate -d /etc/logrotate.conf    # dry-run to test config
+
+    # Manually rotate logs now
+    logrotate -f /etc/logrotate.d/nginx
+
+    # Emergency: compress large log file in place
+    gzip /var/log/app/big.log           # creates big.log.gz, removes original
+
+    # Truncate an actively-written log (safe for processes that keep the FD open)
+    : > /var/log/app/big.log            # truncate to zero without removing file
+    # or equivalently:
+    truncate -s 0 /var/log/app/big.log
+
+    # Check for large journal files (systemd)
+    journalctl --disk-usage
+    journalctl --vacuum-size=500M       # keep only 500 MB of journal
+    journalctl --vacuum-time=7d         # keep only last 7 days
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Service Debugging with systemd
+
+<CodeGroup>
+
+```bash Status and control
+systemctl status nginx               # status + recent journal lines
+systemctl start  nginx               # start
+systemctl stop   nginx               # stop
+systemctl restart nginx              # stop + start
+systemctl reload nginx               # send SIGHUP (reload config, no downtime)
+systemctl enable  nginx              # enable at boot
+systemctl disable nginx              # disable at boot
+systemctl is-active  nginx           # returns 0 if active
+systemctl is-enabled nginx           # returns 0 if enabled
+
+# List failed units
+systemctl --failed
+
+# Check if a service keeps restarting
+systemctl status nginx | grep -E "Active:|restart"
+```
+
+```bash journalctl — reading logs
+# Follow a specific service
+journalctl -u nginx -f
+
+# Last N lines
+journalctl -u nginx -n 100 --no-pager
+
+# Since a point in time
+journalctl -u nginx --since "2024-01-15 14:00:00"
+journalctl -u nginx --since "1 hour ago"
+journalctl -u nginx --since today
+
+# Only errors and above
+journalctl -u nginx -p err
+
+# Across all units, with priority
+journalctl -p err --since "1 hour ago" --no-pager
+
+# Show boot messages
+journalctl -b           # current boot
+journalctl -b -1        # previous boot
+journalctl -b -1 -p err # errors from previous boot
+
+# Kernel messages only
+journalctl -k --no-pager | tail -50
+```
+
+```bash Unit file debugging
+# View the effective unit file (including overrides)
+systemctl cat nginx
+
+# Check for config errors
+systemd-analyze verify /etc/systemd/system/app.service
+
+# Edit with override (preserves vendor file)
+systemctl edit nginx        # creates /etc/systemd/system/nginx.d/override.conf
+
+# Reload after editing
+systemctl daemon-reload
+systemctl restart nginx
+
+# Show service environment
+systemctl show nginx --property=Environment
+```
+
+</CodeGroup>
+
+<Tip>
+  When a service fails to start, always check `journalctl -u service-name -n 50 --no-pager` before anything else. The error is almost always in the last few lines. `systemctl status` truncates long messages — `journalctl` gives the full output.
+</Tip>
+
+---
+
+## Log Analysis Patterns
+
+<CodeGroup>
+
+```bash grep patterns
+# Count error rate per minute from structured logs
+grep "ERROR" /var/log/app/app.log \
+    | awk '{print $1, $2}' \
+    | cut -d: -f1-2 \
+    | sort | uniq -c | sort -rn
+
+# Extract unique IPs from nginx access log
+awk '{print $1}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head -20
+
+# Find slow requests (>1000ms) in nginx
+awk '$NF > 1.0 {print $0}' /var/log/nginx/access.log | wc -l
+
+# Watch log file and alert on pattern
+tail -F /var/log/app/app.log | grep --line-buffered "CRITICAL" | while read -r line; do
+    echo "ALERT: ${line}" | mail -s "Critical error" ops@example.com
+done
+```
+
+```bash journalctl analysis
+# Count errors by service in the last hour
+journalctl --since "1 hour ago" -p err --no-pager \
+    | awk '{print $5}' \
+    | sort | uniq -c | sort -rn | head -10
+
+# Find all occurrences of a string across all units today
+journalctl --since today --no-pager --grep "connection refused"
+
+# Export to file for offline analysis
+journalctl -u app.service --since "2024-01-15" --until "2024-01-16" \
+    --output=json > /tmp/app-2024-01-15.json
+```
+
+```bash Parsing structured logs
+# Parse JSON logs with jq
+tail -100 /var/log/app/app.log \
+    | jq -r 'select(.level=="ERROR") | [.timestamp, .message] | @tsv'
+
+# Find the most common error messages
+jq -r 'select(.level=="ERROR") | .message' /var/log/app/app.log \
+    | sort | uniq -c | sort -rn | head -20
+```
+
+</CodeGroup>
+
+---
+
+## OOM Killer Investigation
+
+<CodeGroup>
+
+```bash Detect OOM kills
+# Was the OOM killer invoked recently?
+dmesg -T | grep -i "oom\|killed process\|out of memory"
+
+# In the journal
+journalctl -k --since "24 hours ago" | grep -i "oom\|killed"
+
+# The OOM killer log line contains:
+# "Out of memory: Kill process <pid> (<name>) score <N> or sacrifice child"
+# "Killed process <pid> (<name>) total-vm:<X>kB, anon-rss:<Y>kB"
+```
+
+```bash OOM scoring
+# Each process has an oom_score (0-1000). Higher = more likely to be killed.
+cat /proc/<pid>/oom_score
+
+# Find processes with highest OOM scores
+for pid in /proc/[0-9]*; do
+    pid_num="${pid##*/}"
+    score=$(cat "${pid}/oom_score" 2>/dev/null || echo 0)
+    name=$(cat "${pid}/comm" 2>/dev/null || echo "?")
+    echo "${score} ${pid_num} ${name}"
+done | sort -rn | head -10
+
+# Protect critical processes from OOM killer
+# oom_score_adj: -1000 = never kill, +1000 = kill first
+echo -500 > /proc/<pid>/oom_score_adj   # reduce kill likelihood
+echo -1000 > /proc/<pid>/oom_score_adj  # make OOM-immune
+
+# Set via systemd unit file:
+# OOMScoreAdjust=-500
+```
+
+```bash Prevent / mitigate OOM situations
+# Check current overcommit policy
+cat /proc/sys/vm/overcommit_memory
+# 0 = heuristic, 1 = always allow, 2 = strict (0.5-1x RAM)
+
+# Strict overcommit (prevents runaway allocations)
+sysctl -w vm.overcommit_memory=2
+sysctl -w vm.overcommit_ratio=80   # allow up to 80% RAM allocation
+
+# Make persistent
+echo "vm.overcommit_memory = 2" >> /etc/sysctl.d/99-memory.conf
+echo "vm.overcommit_ratio = 80"  >> /etc/sysctl.d/99-memory.conf
+sysctl -p /etc/sysctl.d/99-memory.conf
+```
+
+</CodeGroup>
+
+<Warning>
+  `oom_score_adj = -1000` on a service means the OOM killer will never touch it. Use this only for truly critical processes (database, monitoring agent). Protecting the wrong process means something else gets killed instead — possibly the kernel itself triggering a panic.
+</Warning>
+
+---
+
+## Network Connectivity Debugging
+
+<Steps>
+  <Step title="Verify local interface and address">
+    ```bash
+    ip -br addr show      # quick overview of all interfaces and their IPs
+    ip link show          # are all expected interfaces UP?
+    ```
+  </Step>
+  <Step title="Test default gateway reachability">
+    ```bash
+    GATEWAY=$(ip route show default | awk '/default/{print $3; exit}')
+    echo "Default gateway: ${GATEWAY}"
+    ping -c 4 "${GATEWAY}"
+    ```
+  </Step>
+  <Step title="Test external IP connectivity (bypassing DNS)">
+    ```bash
+    ping -c 4 8.8.8.8       # Google DNS by IP — tests raw routing
+    ping -c 4 1.1.1.1        # Cloudflare DNS
+
+    # If gateway pings but 8.8.8.8 doesn't → routing or upstream issue
+    ```
+  </Step>
+  <Step title="Test DNS resolution">
+    ```bash
+    dig +short google.com
+    # If this fails but 8.8.8.8 pings → DNS issue
+    # Try alternate resolver:
+    dig @8.8.8.8 +short google.com
+    ```
+  </Step>
+  <Step title="Test application port specifically">
+    ```bash
+    # Is the remote port open?
+    nc -zv remote-host 443
+    telnet remote-host 443
+
+    # Test HTTP response (not just TCP)
+    curl -sv --max-time 10 https://remote-host/health
+
+    # Check local firewall isn't blocking outbound
+    iptables -L OUTPUT -n -v
+    ```
+  </Step>
+  <Step title="Capture traffic if still unclear">
+    ```bash
+    # Capture all traffic on port 5432 (PostgreSQL)
+    tcpdump -i eth0 -n -w /tmp/capture.pcap port 5432
+
+    # Quick human-readable capture (no write to file)
+    tcpdump -i eth0 -n -A port 80 -c 50
+
+    # Filter by host
+    tcpdump -i any host 10.0.0.5 -n
+
+    # Analyse the pcap offline
+    tcpdump -r /tmp/capture.pcap -n | head -50
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Quick-Reference Incident Checklist
+
+<Accordion title="Service is down — first 5 minutes">
+  ```bash
+  # 1. What is the service status?
+  systemctl status app.service
+
+  # 2. What does the log say?
+  journalctl -u app.service -n 100 --no-pager
+
+  # 3. Is the port open?
+  ss -tlnp | grep '<port>'
+
+  # 4. Any OOM kills?
+  dmesg -T | grep -i "oom\|killed" | tail -10
+
+  # 5. Disk full?
+  df -h
+
+  # 6. Out of inodes?
+  df -i
+
+  # 7. Memory pressure?
+  free -m
+
+  # 8. System load?
+  uptime; vmstat 1 3
+  ```
+</Accordion>
+
+<Accordion title="Application is slow — first 5 minutes">
+  ```bash
+  # 1. Load average vs core count
+  uptime; nproc
+
+  # 2. Is it CPU or I/O wait?
+  vmstat 1 5    # high wa% = I/O bound; high us% = CPU bound
+
+  # 3. Identify the culprit process
+  ps aux --sort=-%cpu | head -10
+  ps aux --sort=-%mem | head -10
+
+  # 4. Check I/O
+  iostat -xz 1 3
+  iotop -b -n 3 -o    # top I/O consumers (requires iotop)
+
+  # 5. Network latency?
+  mtr --report --report-cycles 10 8.8.8.8
+  ss -tnp | grep ESTABLISHED | wc -l    # connection count
+
+  # 6. Database connections?
+  # (PostgreSQL)
+  psql -c "SELECT count(*), state FROM pg_stat_activity GROUP BY state;"
+  ```
+</Accordion>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Linux Essentials" icon="terminal" href="linux/essentials">
+    Core commands used throughout these troubleshooting workflows.
+  </Card>
+  <Card title="Bash Scripting" icon="code" href="linux/bash-scripting">
+    Automate repetitive diagnostic and remediation steps.
+  </Card>
+  <Card title="Networking" icon="network-wired" href="linux/networking">
+    Deep-dive on network diagnostics, firewall, and DNS.
+  </Card>
+  <Card title="DevOps Overview" icon="infinity" href="devops/overview">
+    Monitoring with Prometheus/Grafana and the ELK stack.
+  </Card>
+</CardGroup>

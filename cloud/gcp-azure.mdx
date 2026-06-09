@@ -1,0 +1,464 @@
+---
+title: "GCP and Azure Quick Reference for Cloud Practitioners"
+sidebarTitle: "GCP & Azure"
+description: "Practical gcloud and az CLI notes, key service overviews, auth setup, and a cross-cloud comparison table for GCP and Azure practitioners."
+---
+
+While AWS is my primary cloud platform, a good portion of consulting and cross-team work involves GCP and Azure environments. These notes are a practitioner-level reference — enough to get oriented, run essential CLI commands, and map familiar AWS concepts to their GCP and Azure equivalents without having to dig through full documentation every time.
+
+---
+
+## Authentication Setup
+
+Getting auth right is always the first step on a new machine or project.
+
+<Tabs>
+  <Tab title="GCP — gcloud auth">
+    <Steps>
+      <Step title="Install the Google Cloud SDK">
+        ```bash
+        # macOS via Homebrew
+        brew install --cask google-cloud-sdk
+
+        # Linux (interactive installer)
+        curl https://sdk.cloud.google.com | bash
+        exec -l $SHELL
+        ```
+      </Step>
+
+      <Step title="Authenticate interactively">
+        ```bash
+        # Opens a browser for OAuth2 login
+        gcloud auth login
+
+        # Verify active account
+        gcloud auth list
+        ```
+      </Step>
+
+      <Step title="Set default project and region">
+        ```bash
+        gcloud config set project my-project-id
+        gcloud config set compute/region us-central1
+        gcloud config set compute/zone us-central1-a
+
+        # View full config
+        gcloud config list
+        ```
+      </Step>
+
+      <Step title="Application Default Credentials (for local dev)">
+        ```bash
+        # Sets credentials used by SDKs and Terraform google provider
+        gcloud auth application-default login
+
+        # Or point to a service account key file
+        export GOOGLE_APPLICATION_CREDENTIALS="/path/to/sa-key.json"
+        ```
+      </Step>
+
+      <Step title="Authenticate as a service account (CI/CD)">
+        ```bash
+        gcloud auth activate-service-account \
+          --key-file=/path/to/sa-key.json
+
+        # Or use Workload Identity Federation (keyless, preferred)
+        # Configure in IAM → Workload Identity Pools
+        ```
+      </Step>
+    </Steps>
+
+    <Tip>
+      Prefer **Workload Identity Federation** over service account key files for CI/CD pipelines. It eliminates long-lived credentials and works with GitHub Actions, GitLab CI, and other OIDC-capable providers.
+    </Tip>
+  </Tab>
+
+  <Tab title="Azure — az login">
+    <Steps>
+      <Step title="Install the Azure CLI">
+        ```bash
+        # macOS
+        brew install azure-cli
+
+        # Linux (Debian/Ubuntu)
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        ```
+      </Step>
+
+      <Step title="Interactive login">
+        ```bash
+        # Opens browser for Microsoft account login
+        az login
+
+        # Device code login (headless servers)
+        az login --use-device-code
+        ```
+      </Step>
+
+      <Step title="Set default subscription">
+        ```bash
+        # List available subscriptions
+        az account list --output table
+
+        # Set the active subscription
+        az account set --subscription "My Subscription Name"
+        # or by ID
+        az account set --subscription 00000000-0000-0000-0000-000000000000
+
+        # Confirm active context
+        az account show
+        ```
+      </Step>
+
+      <Step title="Service principal for automation">
+        ```bash
+        # Create a service principal with Contributor role
+        az ad sp create-for-rbac \
+          --name "my-ci-sp" \
+          --role Contributor \
+          --scopes /subscriptions/00000000-0000-0000-0000-000000000000
+
+        # Login as a service principal
+        az login \
+          --service-principal \
+          --username <appId> \
+          --password <password> \
+          --tenant <tenantId>
+        ```
+      </Step>
+    </Steps>
+
+    <Tip>
+      For Azure, **Managed Identities** are the equivalent of AWS IAM roles — assign them to VMs, Functions, and AKS pods to avoid managing credentials entirely.
+    </Tip>
+  </Tab>
+</Tabs>
+
+---
+
+## GCP — Key Services and CLI
+
+<Accordion title="Compute Engine (VMs)">
+  ```bash
+  # List all VM instances across all zones
+  gcloud compute instances list
+
+  # Create a VM
+  gcloud compute instances create web-server-01 \
+    --machine-type=e2-medium \
+    --image-family=debian-12 \
+    --image-project=debian-cloud \
+    --zone=us-central1-a \
+    --tags=http-server,https-server
+
+  # SSH into a VM (uses OS Login or project metadata SSH keys)
+  gcloud compute ssh web-server-01 --zone=us-central1-a
+
+  # Stop / start / delete
+  gcloud compute instances stop web-server-01 --zone=us-central1-a
+  gcloud compute instances start web-server-01 --zone=us-central1-a
+  gcloud compute instances delete web-server-01 --zone=us-central1-a
+
+  # Create a snapshot of a disk
+  gcloud compute disks snapshot web-server-01 \
+    --snapshot-names=web-server-snap-$(date +%Y%m%d) \
+    --zone=us-central1-a
+  ```
+</Accordion>
+
+<Accordion title="Cloud Storage (GCS)">
+  ```bash
+  # List buckets
+  gsutil ls
+  # or
+  gcloud storage buckets list
+
+  # Create a bucket
+  gsutil mb -p my-project-id -l us-central1 gs://my-bucket-name
+
+  # Copy files
+  gsutil cp ./file.txt gs://my-bucket-name/
+  gsutil cp gs://my-bucket-name/file.txt .
+
+  # Sync directory
+  gsutil -m rsync -r ./dist gs://my-static-site
+
+  # Make a single object public
+  gsutil acl ch -u AllUsers:R gs://my-bucket-name/public-file.html
+
+  # List objects with sizes
+  gsutil ls -lh gs://my-bucket-name/
+
+  # Set lifecycle policy (JSON file)
+  gsutil lifecycle set lifecycle.json gs://my-bucket-name
+  ```
+
+  ```json lifecycle.json
+  {
+    "rule": [
+      {
+        "action": {"type": "SetStorageClass", "storageClass": "NEARLINE"},
+        "condition": {"age": 30}
+      },
+      {
+        "action": {"type": "Delete"},
+        "condition": {"age": 365}
+      }
+    ]
+  }
+  ```
+</Accordion>
+
+<Accordion title="GKE — Google Kubernetes Engine">
+  ```bash
+  # List clusters
+  gcloud container clusters list
+
+  # Create a cluster (Autopilot — recommended for most use cases)
+  gcloud container clusters create-auto my-cluster \
+    --region=us-central1
+
+  # Create a Standard cluster
+  gcloud container clusters create my-cluster \
+    --num-nodes=3 \
+    --machine-type=e2-standard-2 \
+    --region=us-central1
+
+  # Get credentials (populates ~/.kube/config)
+  gcloud container clusters get-credentials my-cluster \
+    --region=us-central1
+
+  # Upgrade the control plane
+  gcloud container clusters upgrade my-cluster \
+    --master --cluster-version=1.29 \
+    --region=us-central1
+
+  # Resize a node pool
+  gcloud container clusters resize my-cluster \
+    --node-pool=default-pool \
+    --num-nodes=5 \
+    --region=us-central1
+  ```
+</Accordion>
+
+<Accordion title="Cloud Functions (Serverless)">
+  ```bash
+  # Deploy a Cloud Function (Gen 2, HTTP trigger)
+  gcloud functions deploy my-function \
+    --gen2 \
+    --runtime=python311 \
+    --region=us-central1 \
+    --source=. \
+    --entry-point=handle_request \
+    --trigger-http \
+    --allow-unauthenticated
+
+  # Deploy with a Pub/Sub trigger
+  gcloud functions deploy process-message \
+    --gen2 \
+    --runtime=nodejs20 \
+    --region=us-central1 \
+    --source=. \
+    --entry-point=processMessage \
+    --trigger-topic=my-topic
+
+  # List functions
+  gcloud functions list --region=us-central1
+
+  # View logs
+  gcloud functions logs read my-function \
+    --region=us-central1 --limit=50
+
+  # Delete a function
+  gcloud functions delete my-function --region=us-central1
+  ```
+</Accordion>
+
+---
+
+## Azure — Key Services and CLI
+
+<Accordion title="Virtual Machines">
+  ```bash
+  # List all VMs
+  az vm list --output table
+
+  # Create a VM
+  az vm create \
+    --resource-group my-rg \
+    --name web-server-01 \
+    --image Ubuntu2204 \
+    --size Standard_B2s \
+    --admin-username azureuser \
+    --generate-ssh-keys \
+    --tags Env=prod Owner=platform-team
+
+  # Open port 80
+  az vm open-port --port 80 \
+    --resource-group my-rg --name web-server-01
+
+  # Start / stop / deallocate (stop billing for compute)
+  az vm start  --resource-group my-rg --name web-server-01
+  az vm stop   --resource-group my-rg --name web-server-01
+  az vm deallocate --resource-group my-rg --name web-server-01
+
+  # SSH using native SSH (az CLI ≥ 2.47)
+  az ssh vm --resource-group my-rg --name web-server-01
+  ```
+</Accordion>
+
+<Accordion title="Blob Storage">
+  ```bash
+  # Create a storage account
+  az storage account create \
+    --name mystorageaccount \
+    --resource-group my-rg \
+    --location eastus \
+    --sku Standard_LRS
+
+  # Get connection string
+  az storage account show-connection-string \
+    --name mystorageaccount \
+    --resource-group my-rg \
+    --output tsv
+
+  # Create a container (like an S3 bucket "folder")
+  az storage container create \
+    --name my-container \
+    --account-name mystorageaccount
+
+  # Upload a file
+  az storage blob upload \
+    --account-name mystorageaccount \
+    --container-name my-container \
+    --name report.pdf \
+    --file ./report.pdf
+
+  # List blobs
+  az storage blob list \
+    --account-name mystorageaccount \
+    --container-name my-container \
+    --output table
+
+  # Generate a SAS token (1-hour expiry)
+  az storage blob generate-sas \
+    --account-name mystorageaccount \
+    --container-name my-container \
+    --name report.pdf \
+    --permissions r \
+    --expiry $(date -u -d '1 hour' +%Y-%m-%dT%H:%MZ)
+  ```
+</Accordion>
+
+<Accordion title="AKS — Azure Kubernetes Service">
+  ```bash
+  # List clusters
+  az aks list --output table
+
+  # Create a cluster
+  az aks create \
+    --resource-group my-rg \
+    --name my-aks-cluster \
+    --node-count 3 \
+    --node-vm-size Standard_D2s_v3 \
+    --enable-managed-identity \
+    --generate-ssh-keys
+
+  # Get credentials (merges into ~/.kube/config)
+  az aks get-credentials \
+    --resource-group my-rg \
+    --name my-aks-cluster
+
+  # Scale a node pool
+  az aks scale \
+    --resource-group my-rg \
+    --name my-aks-cluster \
+    --node-count 5 \
+    --nodepool-name nodepool1
+
+  # Upgrade cluster version
+  az aks upgrade \
+    --resource-group my-rg \
+    --name my-aks-cluster \
+    --kubernetes-version 1.29.0
+
+  # Enable the cluster autoscaler
+  az aks update \
+    --resource-group my-rg \
+    --name my-aks-cluster \
+    --enable-cluster-autoscaler \
+    --min-count 2 --max-count 10
+  ```
+</Accordion>
+
+<Accordion title="Azure Functions">
+  ```bash
+  # Create a Function App (consumption plan)
+  az functionapp create \
+    --resource-group my-rg \
+    --consumption-plan-location eastus \
+    --runtime python \
+    --runtime-version 3.11 \
+    --functions-version 4 \
+    --name my-function-app \
+    --storage-account mystorageaccount
+
+  # Deploy using the Azure Functions Core Tools
+  func azure functionapp publish my-function-app
+
+  # List function apps
+  az functionapp list --output table
+
+  # Stream live logs
+  az webapp log tail \
+    --resource-group my-rg \
+    --name my-function-app
+  ```
+</Accordion>
+
+---
+
+## Cross-Cloud Service Comparison
+
+| Category | AWS | GCP | Azure |
+|---|---|---|---|
+| **Virtual Machines** | EC2 | Compute Engine | Virtual Machines |
+| **Managed Kubernetes** | EKS | GKE | AKS |
+| **Serverless Functions** | Lambda | Cloud Functions | Azure Functions |
+| **Object Storage** | S3 | Cloud Storage (GCS) | Blob Storage |
+| **Block Storage** | EBS | Persistent Disk | Managed Disks |
+| **Managed PostgreSQL** | RDS / Aurora | Cloud SQL / AlloyDB | Azure Database for PostgreSQL |
+| **Container Registry** | ECR | Artifact Registry | Azure Container Registry (ACR) |
+| **DNS** | Route 53 | Cloud DNS | Azure DNS |
+| **CDN** | CloudFront | Cloud CDN | Azure Front Door / CDN |
+| **IAM / Identity** | IAM | Cloud IAM | Azure Active Directory / Entra ID |
+| **Secret Management** | Secrets Manager | Secret Manager | Azure Key Vault |
+| **Infrastructure as Code** | CloudFormation | Cloud Deployment Manager | Bicep / ARM Templates |
+| **Monitoring / Logging** | CloudWatch | Cloud Monitoring + Logging | Azure Monitor + Log Analytics |
+| **Load Balancer (L7)** | ALB | Cloud Load Balancing | Application Gateway |
+| **VPN / Private Network** | VPC | VPC | Virtual Network (VNet) |
+| **CI/CD** | CodePipeline | Cloud Build | Azure DevOps / GitHub Actions |
+| **Event Bus** | EventBridge | Eventarc / Pub/Sub | Event Grid |
+
+<Note>
+  The Terraform providers for all three clouds (AWS, GCP, Azure) are mature and widely used. Writing Terraform is often the fastest path to provisioning resources consistently across clouds — see the [Terraform notes](cloud/terraform) for patterns that apply to all three.
+</Note>
+
+---
+
+## Related Notes
+
+<CardGroup cols={2}>
+  <Card title="AWS Reference" icon="aws" href="cloud/aws">
+    Deep-dive CLI commands, IAM practices, S3 operations, and EC2 management for AWS.
+  </Card>
+  <Card title="Terraform" icon="layer-group" href="cloud/terraform">
+    IaC patterns that work across AWS, GCP, and Azure with a unified workflow.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Container orchestration patterns applicable to EKS, GKE, and AKS clusters.
+  </Card>
+  <Card title="FinOps & Cost Management" icon="dollar-sign" href="cloud/finops">
+    Cloud cost optimization strategies and tooling for multi-cloud environments.
+  </Card>
+</CardGroup>

@@ -1,0 +1,103 @@
+---
+title: "DevOps & CI/CD: Core Principles, Pipelines & Tools"
+sidebarTitle: "Overview"
+description: "A field-tested overview of DevOps principles, CI/CD fundamentals, and the tools covered in these notes — GitLab CI, Docker, and Kubernetes."
+---
+
+Modern DevOps is less about any single tool and more about a set of practices that shorten the feedback loop between writing code and running it reliably in production. These notes capture the patterns, commands, and configurations that come up repeatedly in day-to-day SRE and platform engineering work — drawn from real pipelines, real incidents, and real cost-optimisation exercises.
+
+## What is CI/CD?
+
+**Continuous Integration (CI)** is the practice of automatically building and testing every change that enters a shared repository. The goal is to surface integration bugs as early — and as cheaply — as possible, long before they reach production.
+
+**Continuous Delivery / Deployment (CD)** extends CI by automatically promoting validated artefacts through staging environments and, optionally, all the way to production without manual gates.
+
+Together, CI/CD pipelines act as the assembly line of software delivery: code goes in one end, a deployable artefact (container image, Helm chart, binary) comes out the other, with automated quality gates at every stage.
+
+## Core Principles
+
+<CardGroup cols={2}>
+  <Card title="Everything as Code" icon="code">
+    Infrastructure, pipelines, dashboards, and runbooks all live in version control. If it isn't in a repo, it doesn't exist.
+  </Card>
+  <Card title="Shift Left on Quality" icon="arrow-left">
+    Run linting, unit tests, SAST, and container scanning in CI — not after a manual code review or, worse, in production.
+  </Card>
+  <Card title="Immutable Artefacts" icon="box-archive">
+    Build once, promote the same image or binary through every environment. Never rebuild for staging vs. production.
+  </Card>
+  <Card title="Fast Feedback Loops" icon="rotate">
+    A pipeline that takes 40 minutes is a pipeline nobody watches. Parallelise jobs, cache aggressively, fail fast.
+  </Card>
+  <Card title="Observability by Default" icon="chart-line">
+    Metrics, logs, and traces should be baked into every service from day one — not added after the first outage.
+  </Card>
+  <Card title="Blameless Post-Mortems" icon="file-lines">
+    When things go wrong (and they will), focus on systemic fixes and runbook improvements rather than individual blame.
+  </Card>
+</CardGroup>
+
+## The Typical Pipeline Lifecycle
+
+<Steps>
+  <Step title="Source">
+    A developer opens a merge/pull request. The VCS webhook triggers the CI system.
+  </Step>
+  <Step title="Build">
+    The pipeline compiles code, resolves dependencies, and produces a versioned artefact — usually a container image tagged with the commit SHA.
+  </Step>
+  <Step title="Test">
+    Unit tests, integration tests, SAST scanning, and container image scanning all run in parallel where possible.
+  </Step>
+  <Step title="Package & Publish">
+    The validated image is pushed to a container registry (ECR, GCR, GitLab Registry, Docker Hub).
+  </Step>
+  <Step title="Deploy to Staging">
+    The CD stage applies the new image to a staging namespace, runs smoke tests, and waits for a health check.
+  </Step>
+  <Step title="Deploy to Production">
+    After a manual approval gate (or automatically, for fully CD setups), the same artefact rolls out to production via a rolling update or blue/green strategy.
+  </Step>
+</Steps>
+
+## CI/CD Tool Landscape
+
+These notes focus on the tools used most heavily in practice, but the mental models apply across the ecosystem:
+
+| Tool | Strengths | Typical Use Case |
+|---|---|---|
+| **GitLab CI** | Tight SCM integration, built-in registry | Monorepos, self-hosted GitLab |
+| **Jenkins** | Maximum flexibility via plugins | Legacy enterprise environments |
+| **Tekton** | Kubernetes-native, reusable Tasks | Cloud-native / GitOps shops |
+| **GitHub Actions** | Huge marketplace, easy onboarding | GitHub-hosted projects |
+| **Concourse** | Stateless pipelines, reproducible | Strict reproducibility requirements |
+| **Bamboo / GoCD** | Atlassian ecosystem, value-stream maps | Jira-centric organisations |
+
+<Note>
+  These notes don't aim to be exhaustive reference documentation — the official docs do that better. The goal is to capture the 20 % of knowledge that covers 80 % of real-world tasks, plus the hard-won tricks that official docs rarely mention.
+</Note>
+
+## What's Covered Here
+
+<CardGroup cols={3}>
+  <Card title="GitLab CI/CD" icon="gitlab" href="devops/gitlab-cicd">
+    Pipeline structure, Docker-in-Docker, caching strategies, and a full build-and-push workflow.
+  </Card>
+  <Card title="Docker" icon="docker" href="devops/docker">
+    Essential commands, Dockerfile best practices, multi-stage builds, Compose, and networking.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    kubectl recipes, pod troubleshooting, ConfigMaps, resource limits, and rolling updates.
+  </Card>
+</CardGroup>
+
+## Related Sections
+
+<CardGroup cols={2}>
+  <Card title="Cloud & Infrastructure" icon="cloud" href="cloud/terraform">
+    Terraform, AWS, GCP/Azure, and FinOps patterns that sit above the CI/CD layer.
+  </Card>
+  <Card title="Linux Essentials" icon="terminal" href="linux/essentials">
+    The shell skills that underpin every pipeline script and container entrypoint.
+  </Card>
+</CardGroup>

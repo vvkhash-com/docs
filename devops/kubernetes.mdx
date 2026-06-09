@@ -1,0 +1,498 @@
+---
+title: "Kubernetes: kubectl, Pod Troubleshooting & SRE Patterns"
+sidebarTitle: "Kubernetes"
+description: "Practical Kubernetes notes for SRE/DevOps: kubectl essentials, pod troubleshooting, ConfigMaps, Secrets, resource limits, probes, and rolling updates."
+---
+
+Kubernetes is the de-facto runtime for containerised workloads at scale, but its surface area is enormous. These notes focus on the operational slice — the commands and manifest patterns you reach for when deploying, debugging, and maintaining services day-to-day. Theory is kept to a minimum; working YAML and shell commands are kept to a maximum.
+
+## `kubectl` Essentials
+
+<Tabs>
+  <Tab title="Get & Describe">
+    ```bash
+    # List resources (the most-used command in k8s)
+    kubectl get pods                              # current namespace
+    kubectl get pods -n kube-system               # specific namespace
+    kubectl get pods -A                           # all namespaces
+    kubectl get pods -o wide                      # extra columns (node, IP)
+    kubectl get pods -w                           # watch for changes
+
+    # Get all common resources at once
+    kubectl get all -n myapp
+
+    # Output as YAML (great for diffing live state vs. your repo)
+    kubectl get deployment myapp -o yaml
+
+    # JSON path query — e.g. get the image of the first container
+    kubectl get pod myapp-abc123 \
+      -o jsonpath='{.spec.containers[0].image}'
+
+    # Describe gives events + full spec (essential for debugging)
+    kubectl describe pod myapp-abc123
+    kubectl describe node worker-1
+    kubectl describe service myapp-svc
+    ```
+  </Tab>
+  <Tab title="Logs">
+    ```bash
+    # Stream logs from a pod
+    kubectl logs -f myapp-abc123
+
+    # If the pod has multiple containers, specify one
+    kubectl logs -f myapp-abc123 -c sidecar
+
+    # Previous container instance (useful after a crash)
+    kubectl logs myapp-abc123 --previous
+
+    # Last 200 lines only
+    kubectl logs --tail=200 myapp-abc123
+
+    # Logs from all pods matching a label selector
+    kubectl logs -l app=myapp --all-containers=true -f
+
+    # Logs since a duration
+    kubectl logs myapp-abc123 --since=1h
+    ```
+  </Tab>
+  <Tab title="Exec & Port-Forward">
+    ```bash
+    # Interactive shell inside a running pod
+    kubectl exec -it myapp-abc123 -- bash
+    kubectl exec -it myapp-abc123 -- sh   # Alpine/distroless fallback
+
+    # Run a one-off command
+    kubectl exec myapp-abc123 -- env | grep APP_
+
+    # Multi-container pod: target a specific container
+    kubectl exec -it myapp-abc123 -c myapp -- bash
+
+    # Port-forward a pod's port to localhost (no Ingress needed)
+    kubectl port-forward pod/myapp-abc123 8080:3000
+
+    # Port-forward a service (load-balanced across pods)
+    kubectl port-forward svc/myapp-svc 8080:80
+
+    # Port-forward a deployment
+    kubectl port-forward deployment/myapp 8080:3000
+    ```
+  </Tab>
+  <Tab title="Apply & Delete">
+    ```bash
+    # Apply a manifest (create or update)
+    kubectl apply -f deployment.yaml
+    kubectl apply -f ./k8s/                  # all files in a directory
+    kubectl apply -k ./overlays/production   # Kustomize overlay
+
+    # Dry run (server-side — validates against the API)
+    kubectl apply -f deployment.yaml --dry-run=server
+
+    # Show a diff before applying
+    kubectl diff -f deployment.yaml
+
+    # Delete resources
+    kubectl delete -f deployment.yaml
+    kubectl delete pod myapp-abc123
+    kubectl delete pod myapp-abc123 --force --grace-period=0   # hard kill
+
+    # Rollout management
+    kubectl rollout status deployment/myapp
+    kubectl rollout history deployment/myapp
+    kubectl rollout undo deployment/myapp          # roll back one revision
+    kubectl rollout undo deployment/myapp --to-revision=3
+    ```
+  </Tab>
+</Tabs>
+
+## Pod Troubleshooting Workflow
+
+When a pod isn't behaving, follow this sequence:
+
+<Steps>
+  <Step title="Check pod status">
+    ```bash
+    kubectl get pod myapp-abc123 -o wide
+    ```
+    Look at `STATUS` and `RESTARTS`. Common problem states:
+    - `CrashLoopBackOff` — the container keeps crashing; check logs
+    - `OOMKilled` — container exceeded its memory limit; check `describe`
+    - `Pending` — scheduler can't place the pod; check events in `describe`
+    - `ImagePullBackOff` — registry credentials or image name issue
+  </Step>
+  <Step title="Describe the pod for events">
+    ```bash
+    kubectl describe pod myapp-abc123
+    ```
+    Scroll to the **Events** section at the bottom. This is the fastest way to diagnose scheduling failures, image pull errors, and liveness probe failures.
+  </Step>
+  <Step title="Read the logs">
+    ```bash
+    # Current run
+    kubectl logs myapp-abc123
+
+    # If it crashed, read the previous run's logs
+    kubectl logs myapp-abc123 --previous
+    ```
+  </Step>
+  <Step title="Exec in if the container is running">
+    ```bash
+    kubectl exec -it myapp-abc123 -- sh
+
+    # Inside: check environment, DNS, connectivity
+    env | grep -i db
+    nslookup postgres-svc
+    wget -qO- http://localhost:3000/healthz
+    ```
+  </Step>
+  <Step title="Run a debug pod if exec isn't possible">
+    For distroless or minimal images where `sh` doesn't exist:
+    ```bash
+    # Ephemeral debug container (Kubernetes ≥ 1.23)
+    kubectl debug -it myapp-abc123 \
+      --image=busybox:latest \
+      --target=myapp
+
+    # Or spin up a one-off pod with network access in the same namespace
+    kubectl run debug --rm -it \
+      --image=nicolaka/netshoot \
+      --restart=Never \
+      -- bash
+    ```
+  </Step>
+  <Step title="Check node-level issues">
+    ```bash
+    kubectl describe node $(kubectl get pod myapp-abc123 -o jsonpath='{.spec.nodeName}')
+
+    # Check if the node is under memory/CPU pressure
+    kubectl top node
+    kubectl top pod myapp-abc123 --containers
+    ```
+  </Step>
+</Steps>
+
+## ConfigMaps and Secrets
+
+<Tabs>
+  <Tab title="ConfigMaps">
+    ConfigMaps store non-sensitive configuration. They can be consumed as environment variables or mounted as files.
+
+    ```yaml
+    # configmap.yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: myapp-config
+      namespace: myapp
+    data:
+      APP_ENV: production
+      LOG_LEVEL: info
+      config.yaml: |
+        server:
+          port: 3000
+          timeout: 30s
+        feature_flags:
+          new_ui: true
+    ```
+
+    ```yaml
+    # Consume as env vars in a Deployment
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:1.0.0
+          envFrom:
+            - configMapRef:
+                name: myapp-config          # all keys become env vars
+
+          # Or select individual keys
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: myapp-config
+                  key: LOG_LEVEL
+
+          # Mount as a file
+          volumeMounts:
+            - name: config-vol
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config-vol
+          configMap:
+            name: myapp-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+    ```
+
+    ```bash
+    # Imperative creation (useful for quick tests)
+    kubectl create configmap myapp-config \
+      --from-literal=APP_ENV=production \
+      --from-file=config.yaml=./config.yaml
+    ```
+  </Tab>
+  <Tab title="Secrets">
+    Secrets store sensitive data. They're base64-encoded (not encrypted) by default — use an external secrets manager (Vault, AWS Secrets Manager, Sealed Secrets) for production.
+
+    ```yaml
+    # secret.yaml — never commit real values to git
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: myapp-secrets
+      namespace: myapp
+    type: Opaque
+    stringData:                # k8s handles the base64 encoding for you
+      DATABASE_URL: "postgres://user:s3cr3t@db:5432/mydb"
+      API_KEY: "sk-live-abc123xyz"
+    ```
+
+    ```yaml
+    # Consume in a Deployment
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:1.0.0
+          envFrom:
+            - secretRef:
+                name: myapp-secrets
+
+          # Or mount as files (useful for TLS certs, SSH keys)
+          volumeMounts:
+            - name: secret-vol
+              mountPath: /app/secrets
+              readOnly: true
+      volumes:
+        - name: secret-vol
+          secret:
+            secretName: myapp-secrets
+            defaultMode: 0400    # read-only for owner only
+    ```
+
+    ```bash
+    # Create from literal values (avoids secrets in YAML files)
+    kubectl create secret generic myapp-secrets \
+      --from-literal=DATABASE_URL='postgres://...' \
+      --from-literal=API_KEY='sk-live-...'
+
+    # Create a TLS secret from cert files
+    kubectl create secret tls myapp-tls \
+      --cert=tls.crt \
+      --key=tls.key
+    ```
+
+    <Warning>
+      `kubectl get secret myapp-secrets -o yaml` reveals the base64 values — anyone with `get secret` RBAC permissions can decode them. Always restrict Secret access via RBAC and consider encrypting etcd at rest.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Resource Limits & Requests
+
+Setting resource requests and limits is one of the most impactful things you can do for cluster stability. Without them, a noisy neighbour pod can starve everything else on the same node.
+
+```yaml
+spec:
+  containers:
+    - name: myapp
+      image: myapp:1.0.0
+      resources:
+        requests:          # guaranteed allocation — used for scheduling decisions
+          cpu: "250m"      # 250 millicores = 0.25 vCPU
+          memory: "256Mi"
+        limits:            # hard cap — container is killed if it exceeds memory limit
+          cpu: "1000m"     # 1 vCPU
+          memory: "512Mi"
+```
+
+<Note>
+  **requests** = what the scheduler reserves on the node. **limits** = the hard ceiling. Set `requests` accurately to get good bin-packing; set `limits` conservatively to prevent OOM kills cascading across pods.
+</Note>
+
+| Scenario | Symptom | Fix |
+|---|---|---|
+| Memory limit too low | Pod shows `OOMKilled` in `kubectl describe` | Increase memory limit or fix a memory leak |
+| CPU limit too low | Pod is throttled — slow but not killed | Increase CPU limit or profile the hot path |
+| No requests set | Pods scheduled on already-full nodes | Always set requests for production workloads |
+| requests > limits | Invalid — Kubernetes rejects the manifest | Ensure `limits >= requests` |
+
+### LimitRange (Namespace Defaults)
+
+Avoid the "forgot to set resources" footgun with a `LimitRange`:
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: myapp
+spec:
+  limits:
+    - type: Container
+      default:          # applied if no limit is specified
+        cpu: "500m"
+        memory: "256Mi"
+      defaultRequest:   # applied if no request is specified
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "4Gi"
+```
+
+## Readiness & Liveness Probes
+
+Probes are the mechanism by which Kubernetes knows whether your pod is healthy and ready to receive traffic.
+
+```yaml
+spec:
+  containers:
+    - name: myapp
+      image: myapp:1.0.0
+      ports:
+        - containerPort: 3000
+
+      # Readiness: pod receives traffic only when this passes
+      readinessProbe:
+        httpGet:
+          path: /healthz/ready
+          port: 3000
+        initialDelaySeconds: 5    # wait before first probe
+        periodSeconds: 10         # probe every 10 seconds
+        failureThreshold: 3       # 3 consecutive failures → not ready
+
+      # Liveness: pod is restarted when this fails repeatedly
+      livenessProbe:
+        httpGet:
+          path: /healthz/live
+          port: 3000
+        initialDelaySeconds: 15   # give the app time to start
+        periodSeconds: 20
+        failureThreshold: 3
+
+      # Startup: disables liveness until the app has started (slow-start apps)
+      startupProbe:
+        httpGet:
+          path: /healthz/live
+          port: 3000
+        failureThreshold: 30      # 30 × 10s = 5 minutes to start
+        periodSeconds: 10
+```
+
+<Tip>
+  Use **three separate endpoints** — `/healthz/ready`, `/healthz/live`, and optionally `/healthz/startup`. The readiness endpoint should check downstream dependencies (DB connectivity, cache warmup). The liveness endpoint should check only internal process health — never external dependencies, or a dependency outage will cause a cascade of unnecessary pod restarts.
+</Tip>
+
+## Rolling Updates
+
+Kubernetes Deployments perform rolling updates by default. These fields control the rollout behaviour:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1           # at most 1 extra pod above desired count during rollout
+      maxUnavailable: 0     # never go below desired count (zero-downtime)
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      # Graceful shutdown: give the pod time to finish in-flight requests
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: myapp
+          image: myapp:1.1.0
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]  # drain before SIGTERM
+```
+
+```bash
+# Trigger a rollout by updating the image
+kubectl set image deployment/myapp myapp=myapp:1.2.0
+
+# Watch the rollout progress
+kubectl rollout status deployment/myapp --timeout=5m
+
+# Pause a rollout mid-way (canary-style)
+kubectl rollout pause deployment/myapp
+
+# Resume
+kubectl rollout resume deployment/myapp
+
+# Undo the last rollout
+kubectl rollout undo deployment/myapp
+
+# Undo to a specific revision
+kubectl rollout history deployment/myapp
+kubectl rollout undo deployment/myapp --to-revision=2
+```
+
+## Useful One-Liners
+
+```bash
+# Get all pods that are NOT running
+kubectl get pods -A --field-selector='status.phase!=Running'
+
+# Force-delete a stuck terminating pod
+kubectl delete pod myapp-abc123 --force --grace-period=0
+
+# Scale a deployment
+kubectl scale deployment myapp --replicas=6
+
+# Restart all pods in a deployment (zero-downtime rolling restart)
+kubectl rollout restart deployment/myapp
+
+# Copy a file from a pod to localhost
+kubectl cp myapp-abc123:/app/logs/app.log ./app.log
+
+# Get resource usage for all pods, sorted by memory
+kubectl top pod -A --sort-by=memory
+
+# List all images running in the cluster
+kubectl get pods -A \
+  -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' \
+  | sort -u
+
+# Find pods with a specific label
+kubectl get pods -l app=myapp,env=production
+
+# Add a label to a pod (temporary — use manifests for permanent changes)
+kubectl label pod myapp-abc123 debug=true
+
+# Taint a node to prevent new scheduling
+kubectl taint nodes worker-3 maintenance=true:NoSchedule
+
+# Remove the taint
+kubectl taint nodes worker-3 maintenance=true:NoSchedule-
+```
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Docker Essentials" icon="docker" href="devops/docker">
+    Build the container images that Kubernetes runs — Dockerfiles, multi-stage builds, and Compose.
+  </Card>
+  <Card title="GitLab CI/CD" icon="gitlab" href="devops/gitlab-cicd">
+    Automate `kubectl apply` and Helm deployments from a GitLab pipeline.
+  </Card>
+  <Card title="Cloud & Terraform" icon="cloud" href="cloud/terraform">
+    Provision EKS, GKE, or AKS clusters and the supporting infrastructure with Terraform.
+  </Card>
+  <Card title="Linux Troubleshooting" icon="stethoscope" href="linux/troubleshooting">
+    Many pod-level issues trace back to OS-level networking, DNS, or filesystem problems.
+  </Card>
+</CardGroup>

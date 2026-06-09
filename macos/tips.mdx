@@ -1,0 +1,217 @@
+---
+title: "Essential macOS Productivity Tips for All Engineers"
+sidebarTitle: "Tips"
+description: "Practical macOS tips for engineers: install or downgrade macOS versions, flush DNS cache, customize the Dock, and master Spotlight and screenshots."
+---
+
+macOS ships with a powerful set of built-in tools that most engineers barely scratch the surface of. Whether you need to roll back to an older release for compatibility testing, clear a stubborn DNS cache, or just shave seconds off repetitive workflows, this page collects the day-to-day tricks that actually matter on a working machine.
+
+---
+
+## Installing or Downgrading macOS
+
+Sometimes you need a specific macOS release — for virtual machine images, compatibility testing, or simply because a new feature broke your toolchain. Apple keeps older installers available through the Mac App Store; clicking any link below opens the store page directly on your Mac.
+
+<Note>
+  Mojave (10.14) or later is required to access these App Store links. On older
+  systems you may need to use a bootable USB installer instead.
+</Note>
+
+| Version | Name | App Store Link |
+|---------|------|---------------|
+| macOS 26 | Tahoe *(latest)* | Use **Software Update** in System Settings |
+| macOS 15 | Sequoia | [Open in App Store](macappstores://apps.apple.com/app/macos-sequoia/id6596773750?mt=12) |
+| macOS 14 | Sonoma | [Open in App Store](macappstores://apps.apple.com/app/macos-sonoma/id6450717509?mt=12) |
+| macOS 13 | Ventura | [Open in App Store](macappstores://apps.apple.com/app/macos-ventura/id1638787999?mt=12) |
+| macOS 12 | Monterey | [Open in App Store](macappstores://apps.apple.com/app/macos-monterey/id1576738294?mt=12) |
+| macOS 11 | Big Sur | [Open in App Store](macappstores://apps.apple.com/app/macos-big-sur/id1526878132?mt=12) |
+| macOS 10.15 | Catalina | [Open in App Store](macappstores://apps.apple.com/app/macos-catalina/id1466841314?mt=12) |
+| macOS 10.14 | Mojave | [Open in App Store](macappstores://apps.apple.com/app/macos-mojave/id1398502828?mt=12) |
+| macOS 10.13 | High Sierra | [Open in App Store](macappstores://apps.apple.com/app/macos-high-sierra/id1246284741?mt=12) |
+
+You can also check for the latest Tahoe upgrade from the terminal without opening System Settings:
+
+```bash
+softwareupdate --list
+```
+
+<Tip>
+  `softwareupdate --list` shows all available system updates, including the
+  Tahoe upgrade if your Mac is eligible. Once you see it listed, install it
+  directly with `softwareupdate --install <label>`, or continue through System
+  Settings → Software Update for the guided flow.
+</Tip>
+
+---
+
+## Flushing the DNS Cache
+
+When DNS changes aren't reflecting — after editing `/etc/hosts`, switching VPNs, or pushing a new DNS record — flushing the local resolver cache is the fastest fix.
+
+<Warning>
+  This command requires **Administrator** (sudo) privileges. You will be
+  prompted for your password.
+</Warning>
+
+```bash
+sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder
+```
+
+The two-part command first clears `dscacheutil`'s cache store, then sends `mDNSResponder` a hang-up signal so it reloads with an empty slate. No reboot required.
+
+---
+
+## Adding and Removing Dock Separators
+
+Grouping Dock icons with invisible spacers keeps things organised without switching to a third-party launcher. There are two spacer styles:
+
+<Accordion title="Transparent spacer (recommended)">
+
+This is the most common style — a fully transparent gap that acts like an invisible divider between icon groups.
+
+```bash
+defaults write com.apple.dock persistent-apps -array-add \
+  '{"tile-type"="spacer-tile";}' && killall Dock
+```
+
+</Accordion>
+
+<Accordion title="Small spacer tile (macOS 11+)">
+
+Big Sur introduced a smaller, half-width spacer that is useful when you want a subtle visual break rather than a full icon-width gap.
+
+```bash
+defaults write com.apple.dock persistent-apps -array-add \
+  '{tile-data={}; tile-type="spacer-tile";}' && killall Dock
+```
+
+</Accordion>
+
+**Removing spacers** — two options:
+
+<Steps>
+  <Step title="Drag and drop">
+    Click and hold a spacer, then slowly drag it upward out of the Dock until a
+    **Remove** label appears, then release. The Dock bounces and the spacer
+    disappears.
+  </Step>
+  <Step title="Nuke all spacers at once">
+    If the Dock is cluttered with leftover spacers, reset the persistent-apps
+    array entirely. This removes **all** spacers but leaves your real app icons
+    intact on the next login.
+
+    ```bash
+    defaults delete com.apple.dock persistent-apps && killall Dock
+    ```
+
+    <Warning>
+      This command resets the entire persistent-apps list to the macOS default.
+      Back up your current Dock layout first if you have a carefully tuned setup.
+    </Warning>
+  </Step>
+</Steps>
+
+---
+
+## System Settings Shortcuts
+
+Navigating deep into System Settings by hand is slow. These URL schemes open specific panes directly — paste them into Spotlight or run with `open`:
+
+<CodeGroup>
+
+```bash Network
+open "x-apple.systempreferences:com.apple.Network-Settings.extension"
+```
+
+```bash Privacy & Security
+open "x-apple.systempreferences:com.apple.preference.security"
+```
+
+```bash Displays
+open "x-apple.systempreferences:com.apple.Displays-Settings.extension"
+```
+
+```bash Login Items
+open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+```
+
+```bash Software Update
+open "x-apple.systempreferences:com.apple.Software-Update-Settings.extension"
+```
+
+</CodeGroup>
+
+<Tip>
+  You can also jump to any System Settings pane by typing its name directly into
+  **Spotlight** (`⌘ Space`). Type "DNS" or "VPN" and the relevant Network pane
+  appears as the top result.
+</Tip>
+
+---
+
+## Spotlight Tips
+
+Spotlight (`⌘ Space`) is more than a file launcher — it doubles as a quick calculator, unit converter, dictionary, and system-settings shortcut.
+
+| What to type | What you get |
+|---|---|
+| `42 * 1.21` | Inline calculator result |
+| `100 USD in EUR` | Live currency conversion |
+| `define resilient` | Dictionary definition inline |
+| App or pane name | Direct launch / Settings pane |
+| `~` | Home directory in Finder |
+| File extension, e.g. `.tf` | All matching files on disk |
+
+<Note>
+  If Spotlight results feel stale, re-index with:
+  ```bash
+  sudo mdutil -E /
+  ```
+  This forces a full re-index of the boot volume. Expect higher CPU usage for
+  a few minutes while the index rebuilds.
+</Note>
+
+---
+
+## Screenshot Shortcuts
+
+macOS has a built-in, fully-featured screenshot toolkit — no third-party tool needed for most workflows.
+
+| Shortcut | Action |
+|---|---|
+| `⌘ Shift 3` | Capture full screen to Desktop |
+| `⌘ Shift 4` | Crosshair — drag to capture a region |
+| `⌘ Shift 4`, then `Space` | Click a window to capture just that window (with shadow) |
+| `⌘ Shift 5` | Screenshot toolbar — region, window, screen recording |
+| `⌘ Shift 6` | Capture the Touch Bar (if present) |
+
+Add `Control` to any shortcut above to copy to clipboard instead of saving to a file. For example, `⌘ Shift Control 4` lets you drag a region and paste it straight into Slack or a ticket.
+
+<Tip>
+  Change the default save location, file format (PNG/JPG), and whether shadows
+  are included by opening the **Screenshot toolbar** with `⌘ Shift 5` and
+  clicking **Options**.
+</Tip>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="macOS Terminal" icon="terminal" href="macos/terminal">
+    Homebrew, Zsh customisation, SSH key management, and DevOps-friendly
+    aliases for the command line.
+  </Card>
+  <Card title="Linux Essentials" icon="linux" href="linux/essentials">
+    Core commands and concepts that transfer directly between Linux and macOS
+    terminal sessions.
+  </Card>
+  <Card title="Linux Networking" icon="network-wired" href="linux/networking">
+    Deeper networking diagnostics — useful when DNS flushing alone doesn't
+    solve the problem.
+  </Card>
+  <Card title="Linux Troubleshooting" icon="screwdriver-wrench" href="linux/troubleshooting">
+    Systematic debugging patterns applicable to both Linux servers and macOS
+    development machines.
+  </Card>
+</CardGroup>

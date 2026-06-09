@@ -1,0 +1,533 @@
+---
+title: "FinOps Practices, Cost Optimization, and Cloud Waste Notes"
+sidebarTitle: "FinOps"
+description: "FinOps Foundation framework, rightsizing, reserved instances, tagging strategy, AWS cost tools, Cloudhealth, Cloudability, and waste patterns to fix."
+---
+
+FinOps is what happens when engineering rigour meets financial accountability in cloud environments. As a FinOps Certified Practitioner I've worked with Cloudhealth and Cloudability on multi-million dollar AWS estates, and the patterns here reflect real optimizations that moved the needle — not theoretical advice. The goal is to spend on what delivers value, know what you're spending and why, and continuously improve the loop.
+
+---
+
+## What is FinOps?
+
+The **FinOps Foundation** defines FinOps as an operational framework and cultural practice that enables organizations to get maximum business value from their cloud spend by bringing together engineering, finance, and business teams.
+
+The three maturity stages form the **Crawl / Walk / Run** model:
+
+<Steps>
+  <Step title="Crawl — visibility and accountability">
+    Get basic cost visibility in place. This means tagging resources, establishing a cost allocation model, and getting the right people looking at the right data.
+
+    - Enable AWS Cost Explorer and configure cost allocation tags
+    - Identify the top 5 cost drivers in your account
+    - Establish a regular (at minimum monthly) cloud cost review meeting
+    - Assign cost ownership to teams/projects
+  </Step>
+
+  <Step title="Walk — optimization and process">
+    Move from reactive to proactive. You have visibility; now act on it systematically.
+
+    - Implement rightsizing recommendations from Trusted Advisor / Compute Optimizer
+    - Purchase Reserved Instances or Savings Plans for stable baseline workloads
+    - Automate shutdown of non-production environments outside business hours
+    - Set budget alerts with meaningful thresholds
+  </Step>
+
+  <Step title="Run — continuous optimization and culture">
+    FinOps is embedded in engineering workflows, not bolted on afterward.
+
+    - Unit economics: track cost per customer, per transaction, per feature
+    - Cloud costs are part of sprint planning and architecture reviews
+    - Automated anomaly detection triggers Slack/PagerDuty alerts before bills land
+    - Engineers can self-serve cost data without asking finance
+  </Step>
+</Steps>
+
+<Note>
+  Most organizations spend 18–24 months in "Walk" before reaching "Run." That's fine — consistent incremental improvement compounds significantly over time. Focus on the highest-impact items first rather than trying to do everything at once.
+</Note>
+
+---
+
+## Key Cost Optimization Strategies
+
+<Tabs>
+  <Tab title="Rightsizing">
+    Rightsizing means matching compute resources to actual workload requirements. Oversized instances are the most common and most immediately actionable source of waste.
+
+    **How to find rightsizing opportunities:**
+
+    ```bash
+    # List EC2 rightsizing recommendations from Cost Explorer
+    aws ce get-rightsizing-recommendation \
+      --service EC2 \
+      --configuration '{"RecommendationTarget":"SAME_INSTANCE_FAMILY","BenefitsConsidered":true}' \
+      --query "RightsizingRecommendations[*].{
+        Instance:CurrentInstance.ResourceId,
+        CurrentType:CurrentInstance.InstanceType,
+        RecommendedType:RightsizingType,
+        EstimatedSavings:EstimatedMonthlySavingsAmount
+      }" \
+      --output table
+
+    # Check EC2 Compute Optimizer recommendations
+    aws compute-optimizer get-ec2-instance-recommendations \
+      --query "instanceRecommendations[*].{
+        Instance:instanceArn,
+        Finding:finding,
+        RecommendedType:recommendationOptions[0].instanceType,
+        PerfRisk:recommendationOptions[0].performanceRisk
+      }" \
+      --output table
+    ```
+
+    **Common rightsizing patterns:**
+
+    | Scenario | Current | Recommended | Typical Savings |
+    |---|---|---|---|
+    | Dev/test workload | m5.xlarge | t3.large | 40–60% |
+    | Low-CPU web server | c5.2xlarge | c5.large | ~70% |
+    | Over-provisioned DB | r5.4xlarge | r5.2xlarge | ~50% |
+    | Idle NAT instance | c5.large | Managed NAT GW | Varies |
+
+    <Tip>
+      Look at **P99 CPU utilization** over a 2-week period, not average. If average CPU is 3% but P99 is 80%, the instance is sized correctly — it handles burst. If P99 is also 5%, it's massively oversized.
+    </Tip>
+  </Tab>
+
+  <Tab title="Reserved Instances & Savings Plans">
+    Committing to usage in exchange for discounts is the highest-leverage action after rightsizing. The key is committing only to what you know you'll run.
+
+    **Commitment types compared:**
+
+    | Type | Discount vs On-Demand | Flexibility | Commitment |
+    |---|---|---|---|
+    | On-Demand | 0% | Maximum | None |
+    | Compute Savings Plan | Up to 66% | EC2, Fargate, Lambda | 1 or 3 year |
+    | EC2 Instance Savings Plan | Up to 72% | Single instance family + region | 1 or 3 year |
+    | Standard Reserved Instance | Up to 72% | Single instance type, AZ/region | 1 or 3 year |
+    | Convertible Reserved Instance | Up to 54% | Can exchange instance type | 1 or 3 year |
+    | Spot Instances | Up to 90% | Any (interruptible) | None |
+
+    **Recommended coverage strategy:**
+
+    ```
+    Baseline (always on)  →  Savings Plans (Compute for flexibility)
+    Predictable peaks     →  On-Demand or additional RIs
+    Fault-tolerant batch  →  Spot Instances
+    Dev/test (off-hours)  →  Scheduled scaling + On-Demand
+    ```
+
+    ```bash
+    # Check Savings Plans coverage in the last 30 days
+    aws ce get-savings-plans-coverage \
+      --time-period Start=$(date -d '30 days ago' +%Y-%m-%d),End=$(date +%Y-%m-%d) \
+      --granularity MONTHLY \
+      --query "SavingsPlansCoverages[*].Coverage"
+
+    # Get Savings Plans purchase recommendations
+    aws ce get-savings-plans-purchase-recommendation \
+      --savings-plans-type COMPUTE_SP \
+      --term-in-years ONE_YEAR \
+      --payment-option NO_UPFRONT \
+      --lookback-period-in-days THIRTY_DAYS
+    ```
+  </Tab>
+
+  <Tab title="Spot & Preemptible Instances">
+    Spot (AWS) and Preemptible (GCP) instances use spare cloud capacity at up to 90% discount. They can be interrupted with a 2-minute warning, so they require fault-tolerant architecture.
+
+    **Best workloads for Spot:**
+    - Batch processing (data pipelines, ETL, image/video transcoding)
+    - CI/CD build agents
+    - Stateless web tier behind a load balancer
+    - Machine learning training jobs
+    - Development and testing environments
+
+    ```bash
+    # Check current Spot price history for t3.medium in us-east-1
+    aws ec2 describe-spot-price-history \
+      --instance-types t3.medium \
+      --product-descriptions "Linux/UNIX" \
+      --start-time $(date -u -d '24 hours ago' +%FT%TZ) \
+      --query "SpotPriceHistory[*].{AZ:AvailabilityZone,Price:SpotPrice,Time:Timestamp}" \
+      --output table
+
+    # Launch a Spot instance with a max price cap
+    aws ec2 run-instances \
+      --instance-type t3.medium \
+      --image-id ami-0abcdef1234567890 \
+      --instance-market-options '{"MarketType":"spot","SpotOptions":{"MaxPrice":"0.05","SpotInstanceType":"one-time"}}'
+    ```
+
+    <Warning>
+      Never run stateful workloads (primary databases, file servers with local state) on Spot without a clear interruption-handling strategy. A 2-minute warning is not enough to safely flush a database write buffer.
+    </Warning>
+  </Tab>
+</Tabs>
+
+---
+
+## AWS Cost Management Tools
+
+<CardGroup cols={2}>
+  <Card title="Cost Explorer" icon="chart-bar">
+    The primary AWS cost visualization and analysis tool. Slice costs by service, linked account, region, usage type, or any cost allocation tag. Use it to identify trends, anomalies, and the biggest cost drivers before acting on them.
+  </Card>
+  <Card title="AWS Budgets" icon="bell">
+    Set cost, usage, or coverage thresholds with SNS/email alerts. Supports forecasted spend alerts — you get notified before you overspend, not after. Supports RI/Savings Plans coverage and utilization budgets.
+  </Card>
+  <Card title="Trusted Advisor" icon="shield-check">
+    Checks your account against AWS best practices across cost optimization, security, fault tolerance, performance, and service limits. Cost checks include idle EC2, unattached EBS, underutilized RDS, and low-utilization load balancers.
+  </Card>
+  <Card title="Compute Optimizer" icon="microchip">
+    Uses ML to analyze 14 days of CloudWatch metrics and recommend optimal instance types for EC2, Auto Scaling groups, EBS volumes, Lambda, ECS on Fargate, and RDS. More accurate than Trusted Advisor for compute recommendations.
+  </Card>
+</CardGroup>
+
+```bash
+# Create a monthly cost budget with alert at 80% and 100%
+aws budgets create-budget \
+  --account-id 123456789012 \
+  --budget '{
+    "BudgetName": "monthly-total-cost",
+    "BudgetLimit": {"Amount": "5000", "Unit": "USD"},
+    "TimeUnit": "MONTHLY",
+    "BudgetType": "COST"
+  }' \
+  --notifications-with-subscribers '[
+    {
+      "Notification": {
+        "NotificationType": "ACTUAL",
+        "ComparisonOperator": "GREATER_THAN",
+        "Threshold": 80,
+        "ThresholdType": "PERCENTAGE"
+      },
+      "Subscribers": [{"SubscriptionType": "EMAIL", "Address": "finops@company.com"}]
+    },
+    {
+      "Notification": {
+        "NotificationType": "FORECASTED",
+        "ComparisonOperator": "GREATER_THAN",
+        "Threshold": 100,
+        "ThresholdType": "PERCENTAGE"
+      },
+      "Subscribers": [{"SubscriptionType": "EMAIL", "Address": "finops@company.com"}]
+    }
+  ]'
+
+# Get this month's cost grouped by service
+aws ce get-cost-and-usage \
+  --time-period Start=$(date +%Y-%m-01),End=$(date +%Y-%m-%d) \
+  --granularity MONTHLY \
+  --metrics BlendedCost \
+  --group-by Type=DIMENSION,Key=SERVICE \
+  --query "ResultsByTime[0].Groups[*].{Service:Keys[0],Cost:Metrics.BlendedCost.Amount}" \
+  --output table | sort -k2 -rn
+
+# Get daily spend for the last 7 days
+aws ce get-cost-and-usage \
+  --time-period Start=$(date -d '7 days ago' +%Y-%m-%d),End=$(date +%Y-%m-%d) \
+  --granularity DAILY \
+  --metrics UnblendedCost \
+  --query "ResultsByTime[*].{Date:TimePeriod.Start,Cost:Total.UnblendedCost.Amount}" \
+  --output table
+```
+
+---
+
+## FinOps Tooling: Cloudhealth & Cloudability
+
+Both tools sit above the native AWS Cost Explorer and are designed for multi-account, multi-cloud estates where native tooling becomes unwieldy.
+
+<Accordion title="Cloudhealth by VMware">
+  Cloudhealth excels at **policy-based governance** and multi-cloud cost management across AWS, GCP, and Azure in a single pane.
+
+  **Core use cases I use it for:**
+  - **Perspectives**: Custom groupings (by business unit, product, team) that map onto your org structure rather than just AWS account hierarchy
+  - **Policies & Actions**: Automated alerts and (optionally) enforcement actions — e.g., notify owner when an untagged resource has been running for 7 days
+  - **Rightsizing**: The recommendation engine pulls Cloudwatch data and blends it with RI/SP coverage
+  - **Reports**: Scheduled cost reports delivered to Slack or email for team leads
+
+  **Key Cloudhealth concepts:**
+  - **Asset**: Any tracked cloud resource (EC2, S3, RDS, etc.)
+  - **Perspective**: A hierarchical grouping of assets by tag, account, or custom rule
+  - **Policy**: A rule that triggers an alert or action based on asset state, cost, or tag compliance
+</Accordion>
+
+<Accordion title="Cloudability by Apptio">
+  Cloudability focuses on **financial reporting accuracy**, unit economics, and chargeback/showback workflows. Particularly strong in enterprises with mature IT financial management (ITFM) practices.
+
+  **Core use cases:**
+  - **True Cost**: Amortizes RI/SP fees and distributes shared costs (support plans, data transfer) across teams fairly
+  - **Allocations**: Map costs to cost centers, products, or teams using tag-based and rule-based allocation logic
+  - **Budgeting and Forecasting**: Forward-looking spend models with scenario planning
+  - **Rightsizing**: Recommendations with one-click report generation for executive-ready output
+
+  **When to use Cloudability over Cloudhealth:**
+  - You need detailed showback/chargeback reports that satisfy finance teams
+  - Unit economics (cost per customer, cost per transaction) are a priority
+  - You integrate cloud costs into existing ITFM or Apptio tooling
+</Accordion>
+
+---
+
+## Tagging Strategy for Cost Allocation
+
+A tagging strategy is the foundation of everything in FinOps. Without consistent tags you cannot allocate costs, enforce ownership, or build accurate reports.
+
+<Steps>
+  <Step title="Define mandatory tags at the account level">
+    Establish a core set of tags that every billable resource must carry. Enforce these via SCP (AWS Organizations) or Tag Policies.
+
+    | Tag Key | Example Values | Purpose |
+    |---|---|---|
+    | `Environment` | `prod`, `staging`, `dev` | Filter by lifecycle |
+    | `Project` | `payments`, `platform`, `data-pipeline` | Allocate to project |
+    | `Team` | `backend`, `platform`, `data` | Ownership and alerting |
+    | `CostCenter` | `1001`, `2034` | Finance chargeback |
+    | `Owner` | `alice@company.com` | Point of contact |
+    | `ManagedBy` | `terraform`, `cloudformation`, `manual` | Audit and compliance |
+  </Step>
+
+  <Step title="Enable cost allocation tags in Cost Explorer">
+    ```bash
+    # Activate user-defined cost allocation tags
+    # (must be done in the management/payer account)
+    aws ce create-cost-category-definition \
+      --name "Team Allocation" \
+      --rule-version "CostCategoryExpression.v1" \
+      --rules '[
+        {
+          "Value": "platform",
+          "Rule": {
+            "Tags": {"Key": "Team", "Values": ["platform"]}
+          }
+        },
+        {
+          "Value": "backend",
+          "Rule": {
+            "Tags": {"Key": "Team", "Values": ["backend"]}
+          }
+        }
+      ]' \
+      --default-value "unallocated"
+    ```
+  </Step>
+
+  <Step title="Find untagged resources">
+    ```bash
+    # Get all EC2 instances and filter out those that have the 'Team' tag —
+    # the remaining results are missing it. (The API cannot query absent keys directly.)
+    aws resourcegroupstaggingapi get-resources \
+      --resource-type-filters ec2:instance \
+      --query "ResourceTagMappingList[?!contains(Tags[].Key, 'Team')].ResourceARN" \
+      --output text
+
+    # Broader search: all resources that lack an Environment tag
+    aws resourcegroupstaggingapi get-resources \
+      --query "ResourceTagMappingList[?!contains(Tags[].Key, 'Environment')].{ARN:ResourceARN,Tags:Tags}" \
+      --output json
+    ```
+
+    <Tip>
+      For continuous enforcement, use the **AWS Config managed rule `required-tags`** — it flags non-compliant resources automatically as they are created and gives you a compliance dashboard without manual scripting.
+    </Tip>
+  </Step>
+
+  <Step title="Enforce tags via SCP">
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "DenyEC2WithoutRequiredTags",
+          "Effect": "Deny",
+          "Action": ["ec2:RunInstances"],
+          "Resource": "arn:aws:ec2:*:*:instance/*",
+          "Condition": {
+            "Null": {
+              "aws:RequestTag/Environment": "true",
+              "aws:RequestTag/Team": "true",
+              "aws:RequestTag/Project": "true"
+            }
+          }
+        }
+      ]
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Common Cloud Waste Patterns
+
+<Accordion title="Idle and underutilized EC2 instances">
+  **Pattern**: Instances running 24/7 with < 5% average CPU, typically forgotten dev/test environments or decommissioned services that were never terminated.
+
+  **Fix**:
+  ```bash
+  # Find instances with < 5% avg CPU over last 14 days
+  aws cloudwatch get-metric-statistics \
+    --namespace AWS/EC2 \
+    --metric-name CPUUtilization \
+    --statistics Average \
+    --period 1209600 \
+    --start-time $(date -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ) \
+    --end-time $(date +%Y-%m-%dT%H:%M:%SZ) \
+    --dimensions Name=InstanceId,Value=i-0abcd1234efgh5678
+
+  # Automate dev environment shutdown via EventBridge + Lambda:
+  # Schedule: cron(0 20 ? * MON-FRI *) → stop tagged instances
+  # Schedule: cron(0 8 ? * MON-FRI *)  → start tagged instances
+  ```
+
+  Tag dev instances with `AutoShutdown=true` and build a Lambda that stops/starts based on this tag on a schedule.
+</Accordion>
+
+<Accordion title="Unattached EBS volumes">
+  **Pattern**: EBS volumes left behind when EC2 instances are terminated (especially when `Delete on Termination` was not set). Can accumulate silently.
+
+  **Fix**:
+  ```bash
+  # Find all available (unattached) EBS volumes
+  aws ec2 describe-volumes \
+    --filters Name=status,Values=available \
+    --query "Volumes[*].{
+      ID:VolumeId,
+      Size:Size,
+      Type:VolumeType,
+      AZ:AvailabilityZone,
+      Created:CreateTime
+    }" --output table
+
+  # Delete a specific volume (after verifying it's safe)
+  aws ec2 delete-volume --volume-id vol-0abcdef1234567890
+  ```
+
+  **Prevention**: Always set `delete_on_termination = true` in EC2 launch configurations and Terraform `root_block_device` blocks.
+</Accordion>
+
+<Accordion title="Idle load balancers">
+  **Pattern**: ALBs and NLBs that receive no traffic (e.g., old environments, migrated services) but continue to incur hourly charges plus LCU costs.
+
+  **Fix**:
+  ```bash
+  # Find load balancers with zero healthy targets
+  aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[*].{Name:LoadBalancerName,ARN:LoadBalancerArn,DNS:DNSName}" \
+    --output table
+
+  # Check request count on each LB (last 7 days)
+  aws cloudwatch get-metric-statistics \
+    --namespace AWS/ApplicationELB \
+    --metric-name RequestCount \
+    --dimensions Name=LoadBalancer,Value=<load-balancer-name> \
+    --statistics Sum --period 604800 \
+    --start-time $(date -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ) \
+    --end-time $(date +%Y-%m-%dT%H:%M:%SZ)
+  ```
+</Accordion>
+
+<Accordion title="Old EBS snapshots and AMIs">
+  **Pattern**: Snapshots created for backups or AMI builds accumulate over months/years. Each GB stored incurs ongoing cost. 1,000 snapshots of a 50GB volume = 50TB of snapshot storage.
+
+  **Fix**:
+  ```bash
+  # List snapshots owned by your account, sorted by start time
+  aws ec2 describe-snapshots --owner-ids self \
+    --query "sort_by(Snapshots, &StartTime)[*].{
+      ID:SnapshotId,
+      Size:VolumeSize,
+      Date:StartTime,
+      Desc:Description
+    }" --output table
+
+  # Delete a snapshot
+  aws ec2 delete-snapshot --snapshot-id snap-0abcdef1234567890
+  ```
+
+  Implement a **Data Lifecycle Manager (DLM) policy** to automate snapshot creation and retention, rather than keeping manual snapshots indefinitely.
+</Accordion>
+
+<Accordion title="Overprovisioned RDS instances">
+  **Pattern**: RDS instances sized for peak load that rarely happens — or Multi-AZ enabled on dev/staging databases where a brief failover window is acceptable.
+
+  **Fix**:
+  - Use Compute Optimizer RDS recommendations (available for MySQL and PostgreSQL on RDS)
+  - Disable Multi-AZ on non-production environments (saves ~50% of RDS cost)
+  - Use Aurora Serverless v2 for workloads with highly variable or unpredictable load
+  - Consider Aurora for production PostgreSQL/MySQL — better price/performance at scale
+
+  ```bash
+  # Disable Multi-AZ on a non-prod RDS instance
+  aws rds modify-db-instance \
+    --db-instance-identifier my-dev-database \
+    --no-multi-az \
+    --apply-immediately
+  ```
+</Accordion>
+
+<Accordion title="Data transfer and NAT Gateway costs">
+  **Pattern**: NAT Gateway charges $0.045/GB of data processed in addition to hourly fees. Lambda functions and containers making frequent calls to public endpoints (S3, DynamoDB, external APIs) through a NAT Gateway can generate surprisingly large bills.
+
+  **Fix**:
+  - Use **VPC Endpoints** (Gateway or Interface) for S3 and DynamoDB — no data transfer cost through NAT
+  - Use **PrivateLink** for other AWS services to avoid traversing the public internet
+  - Review the `NatGateway DataProcessed` CloudWatch metric to identify high-volume sources
+
+  ```bash
+  # Create a VPC Gateway Endpoint for S3 (free)
+  aws ec2 create-vpc-endpoint \
+    --vpc-id vpc-0abcdef1234567890 \
+    --service-name com.amazonaws.us-east-1.s3 \
+    --route-table-ids rtb-0abcdef1234567890
+
+  # Monitor NAT Gateway data processing cost
+  aws cloudwatch get-metric-statistics \
+    --namespace AWS/NATGateway \
+    --metric-name BytesOutToDestination \
+    --dimensions Name=NatGatewayId,Value=nat-0abcdef1234567890 \
+    --statistics Sum --period 86400 \
+    --start-time $(date -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ) \
+    --end-time $(date +%Y-%m-%dT%H:%M:%SZ)
+  ```
+</Accordion>
+
+---
+
+## Quick Reference: FinOps Checklist
+
+```text
+Monthly Review Checklist
+─────────────────────────────────────────────────────
+[ ] Review Cost Explorer — top 5 cost drivers vs last month
+[ ] Check Trusted Advisor cost optimization recommendations
+[ ] Audit untagged resources report
+[ ] Review Savings Plans / RI coverage and utilization
+[ ] Check Compute Optimizer for new rightsizing recommendations
+[ ] Scan for idle load balancers, unattached EBS, old snapshots
+[ ] Verify budget alerts are configured and recipients are current
+[ ] Review NAT Gateway data transfer for unexpected spikes
+[ ] Share cost report with team leads (showback)
+```
+
+---
+
+## Related Notes
+
+<CardGroup cols={2}>
+  <Card title="AWS Reference" icon="aws" href="cloud/aws">
+    AWS CLI commands for Cost Explorer, CloudWatch, and resource management that feed directly into FinOps workflows.
+  </Card>
+  <Card title="Terraform" icon="layer-group" href="cloud/terraform">
+    Enforce tagging standards and cost-conscious defaults (right instance types, GP3 volumes) through infrastructure code.
+  </Card>
+  <Card title="GCP & Azure" icon="cloud" href="cloud/gcp-azure">
+    Cost optimization patterns for GCP committed use discounts and Azure reservations.
+  </Card>
+  <Card title="DevOps Overview" icon="gears" href="devops/overview">
+    How FinOps practices integrate with engineering workflows, sprint planning, and CI/CD pipelines.
+  </Card>
+</CardGroup>

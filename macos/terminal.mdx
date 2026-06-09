@@ -1,0 +1,393 @@
+---
+title: "macOS Terminal and Shell Productivity for DevOps Engineers"
+sidebarTitle: "Terminal"
+description: "Level up your macOS terminal: Homebrew, Oh My Zsh, SSH key management, PATH config, iTerm2 tricks, and battle-tested DevOps aliases."
+---
+
+The macOS terminal is a first-class DevOps workstation — especially when you layer in Homebrew, a well-tuned Zsh config, and a handful of macOS-native commands that simply don't exist on Linux. This page collects the patterns and one-liners that make day-to-day infrastructure work faster and less error-prone.
+
+---
+
+## Homebrew Essentials
+
+Homebrew is the de-facto package manager for macOS. Everything below assumes it is already installed; if not, bootstrap it with a single line.
+
+<Steps>
+  <Step title="Install Homebrew">
+    ```bash
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    ```
+    The installer guides you through Xcode Command Line Tools if they are missing. On Apple Silicon, Homebrew lands in `/opt/homebrew/` — remember to add it to your PATH (see [PATH Management](#path-management) below).
+  </Step>
+  <Step title="Install packages">
+    ```bash
+    brew install <formula>          # CLI tool or library
+    brew install --cask <cask>      # GUI application (e.g. iTerm2, Docker Desktop)
+    ```
+  </Step>
+  <Step title="Keep everything up to date">
+    <CodeGroup>
+
+    ```bash Update formulae list
+    brew update
+    ```
+
+    ```bash Upgrade all installed packages
+    brew upgrade
+    ```
+
+    ```bash Upgrade a single package
+    brew upgrade <formula>
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Diagnose problems">
+    ```bash
+    brew doctor
+    ```
+    Run this any time something feels off — it checks for broken symlinks, outdated Xcode tools, conflicting PATH entries, and more, then suggests fixes.
+  </Step>
+</Steps>
+
+<Tip>
+  Clean up old versions and cached downloads periodically to reclaim disk space:
+  ```bash
+  brew cleanup --prune=7   # Remove versions older than 7 days
+  ```
+</Tip>
+
+---
+
+## Oh My Zsh and Shell Customisation
+
+macOS has shipped Zsh as the default shell since Catalina. Oh My Zsh turbo-charges it with plugin management, themes, and hundreds of community shortcuts.
+
+<Steps>
+  <Step title="Install Oh My Zsh">
+    ```bash
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    ```
+  </Step>
+  <Step title="Pick a theme">
+    Open `~/.zshrc` and set your preferred theme. A reliable, information-dense
+    choice for DevOps work:
+    ```bash
+    ZSH_THEME="agnoster"   # shows git branch + exit code in prompt
+    ```
+    For a faster, no-font-dependency option:
+    ```bash
+    ZSH_THEME="robbyrussell"
+    ```
+  </Step>
+  <Step title="Enable useful plugins">
+    ```bash
+    plugins=(git z docker kubectl terraform aws brew macos)
+    ```
+    Add this line (or edit the existing `plugins=(...)` block) in `~/.zshrc`, then reload:
+    ```bash
+    source ~/.zshrc
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `z` plugin tracks your most-visited directories and lets you jump to them
+  with `z <partial-name>` instead of typing full paths. It pays for itself
+  within the first hour.
+</Note>
+
+---
+
+## macOS-Specific Terminal Commands
+
+These commands either don't exist on Linux or behave differently — they're worth knowing because they integrate tightly with macOS internals.
+
+<Accordion title="open — launch anything from the terminal">
+
+`open` is the terminal equivalent of double-clicking in Finder.
+
+```bash
+open .                        # Open current directory in Finder
+open ~/Downloads              # Open a folder
+open -a "Visual Studio Code" .  # Open current dir in a specific app
+open https://example.com      # Open URL in default browser
+open -R ~/some/file.txt       # Reveal file in Finder (don't open it)
+```
+
+</Accordion>
+
+<Accordion title="pbcopy / pbpaste — clipboard integration">
+
+Pipe anything into the system clipboard or back out again — invaluable for sharing command output without mouse gymnastics.
+
+```bash
+cat ~/.ssh/id_ed25519.pub | pbcopy    # Copy SSH public key to clipboard
+pbpaste > ~/Desktop/snippet.txt       # Dump clipboard contents to a file
+echo "hello" | pbcopy && pbpaste      # Quick round-trip test
+```
+
+</Accordion>
+
+<Accordion title="say — text-to-speech notifications">
+
+Useful for alerting you when a long-running script finishes without requiring you to watch the terminal.
+
+```bash
+terraform apply && say "Terraform apply complete" || say "Terraform failed"
+sleep 3600 && say "One hour timer done"
+```
+
+</Accordion>
+
+<Accordion title="caffeinate — prevent sleep during long jobs">
+
+Stops macOS from sleeping while a script runs. Pairs perfectly with large deploys or overnight syncs.
+
+```bash
+caffeinate -i make build           # Keep system awake for the duration
+caffeinate -t 7200                 # Stay awake for exactly 2 hours
+caffeinate -s ./backup-script.sh   # Prevent system sleep (not display sleep)
+```
+
+</Accordion>
+
+<Accordion title="networksetup — manage network from the CLI">
+
+Control Wi-Fi, DNS, and proxies without touching System Settings — great for scripted environment switching.
+
+```bash
+networksetup -listallnetworkservices            # List interfaces
+networksetup -getdnsservers Wi-Fi               # Show current DNS servers
+networksetup -setdnsservers Wi-Fi 1.1.1.1 8.8.8.8  # Set custom DNS
+networksetup -setairportpower en0 off           # Turn Wi-Fi off
+networksetup -setairportpower en0 on            # Turn Wi-Fi on
+```
+
+</Accordion>
+
+<Accordion title="diskutil — disk and volume management">
+
+```bash
+diskutil list                        # List all disks and partitions
+diskutil info /dev/disk0             # Detailed info on a disk
+diskutil eraseDisk APFS MyDisk /dev/disk2   # Format a disk (DESTRUCTIVE)
+diskutil unmountDisk /dev/disk2      # Unmount all volumes on a disk
+```
+
+<Warning>
+  `diskutil eraseDisk` is irreversible. Always double-check the device
+  identifier with `diskutil list` before running destructive commands.
+</Warning>
+
+</Accordion>
+
+<Accordion title="defaults — read and write macOS preferences">
+
+Every macOS app stores its settings in a plist database that `defaults` exposes as a CLI.
+
+```bash
+# Show hidden files in Finder
+defaults write com.apple.finder AppleShowAllFiles true && killall Finder
+
+# Disable the Gatekeeper quarantine warning (use carefully)
+defaults write com.apple.LaunchServices LSQuarantine -bool false
+
+# Speed up Dock animation
+defaults write com.apple.dock autohide-delay -float 0 && killall Dock
+
+# Show full path in Finder title bar
+defaults write com.apple.finder _FXShowPosixPathInTitle -bool true && killall Finder
+
+# Read a value back
+defaults read com.apple.dock autohide-delay
+```
+
+</Accordion>
+
+---
+
+## SSH Key Management on macOS
+
+macOS Keychain can store SSH key passphrases so you authenticate once per boot rather than per session.
+
+<Steps>
+  <Step title="Generate a new key">
+    Ed25519 is the current recommended algorithm — smaller and faster than RSA.
+    ```bash
+    ssh-keygen -t ed25519 -C "your@email.com" -f ~/.ssh/id_ed25519
+    ```
+    For legacy servers that don't support Ed25519:
+    ```bash
+    ssh-keygen -t rsa -b 4096 -C "your@email.com" -f ~/.ssh/id_rsa
+    ```
+  </Step>
+  <Step title="Add the key to the agent with Keychain">
+    The `--apple-use-keychain` flag (macOS-only) stores the passphrase in
+    Keychain so you're only prompted once per machine restart.
+    ```bash
+    ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+    ```
+  </Step>
+  <Step title="Persist across reboots via ~/.ssh/config">
+    Add the following block so the agent reloads keys automatically on login:
+    ```
+    Host *
+      AddKeysToAgent yes
+      UseKeychain yes
+      IdentityFile ~/.ssh/id_ed25519
+    ```
+  </Step>
+  <Step title="Copy the public key to a remote host">
+    ```bash
+    ssh-copy-id -i ~/.ssh/id_ed25519.pub user@remote-host
+    # or, if ssh-copy-id is unavailable:
+    cat ~/.ssh/id_ed25519.pub | pbcopy   # then paste into ~/.ssh/authorized_keys
+    ```
+  </Step>
+  <Step title="List keys currently loaded in the agent">
+    ```bash
+    ssh-add -l
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Use separate key pairs for different contexts — personal GitHub, work GitLab,
+  cloud jump hosts — and route them with `Host` blocks in `~/.ssh/config`.
+  This limits blast radius if a key is ever compromised.
+</Tip>
+
+---
+
+## iTerm2 Tips
+
+iTerm2 is the standard terminal emulator for macOS power users. A few features that pay dividends immediately:
+
+| Feature | How to access |
+|---|---|
+| Split panes | `⌘ D` (vertical) / `⌘ Shift D` (horizontal) |
+| Broadcast input to all panes | `⌘ Shift I` — type once, run everywhere |
+| Instant Replay | `⌘ Opt B` — rewind terminal output by seconds |
+| Tmux integration | `tmux -CC` — iTerm2 maps tmux sessions to native windows/tabs |
+| Shell integration | **iTerm2 → Install Shell Integration** — adds `imgcat`, marks, and jump-to-prompt |
+| Profiles | Store different color schemes + working dirs per project |
+
+<CodeGroup>
+
+```bash Install via Homebrew
+brew install --cask iterm2
+```
+
+```bash Install imgcat (display images in terminal)
+brew install imgcat
+imgcat screenshot.png
+```
+
+</CodeGroup>
+
+---
+
+## PATH Management
+
+On Apple Silicon, Homebrew lives at `/opt/homebrew/bin`, not `/usr/local/bin`. Managing PATH cleanly avoids subtle version conflicts between system tools and Homebrew-installed ones.
+
+<Note>
+  Use `~/.zprofile` for environment variables (runs at login) and `~/.zshrc`
+  for interactive settings like aliases and plugins (runs per shell session).
+  Avoid duplicating PATH exports across both files.
+</Note>
+
+```bash title="~/.zprofile — canonical place for PATH on Apple Silicon"
+# Homebrew (Apple Silicon)
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+# Homebrew (Intel fallback)
+# eval "$(/usr/local/bin/brew shellenv)"
+
+# Language version managers
+export PATH="$HOME/.rbenv/shims:$PATH"         # Ruby
+export PATH="$HOME/.pyenv/shims:$PATH"         # Python
+export PATH="$HOME/go/bin:$PATH"               # Go binaries
+export PATH="$HOME/.cargo/bin:$PATH"           # Rust
+
+# Local scripts — highest priority
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Check the effective PATH without opening a new shell:
+```bash
+echo $PATH | tr ':' '\n'   # One entry per line — much easier to read
+```
+
+---
+
+## DevOps Aliases
+
+Drop these into `~/.zshrc` (or a sourced `~/.zsh_aliases` file). Reload with `source ~/.zshrc`.
+
+```bash title="~/.zshrc — DevOps alias block"
+# ── Navigation ────────────────────────────────────────────────────
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ll='ls -lAhF'
+alias llt='ls -lAhFt'          # sort by modified time
+
+# ── Git ───────────────────────────────────────────────────────────
+alias gs='git status -sb'
+alias gp='git push'
+alias gl='git pull --rebase'
+alias glog='git log --oneline --graph --decorate --all'
+alias gdiff='git diff --stat'
+
+# ── Docker ────────────────────────────────────────────────────────
+alias dk='docker'
+alias dkps='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+alias dkclean='docker system prune -af --volumes'
+alias dklogs='docker logs -f --tail 100'
+
+# ── Kubernetes ────────────────────────────────────────────────────
+alias k='kubectl'
+alias kgp='kubectl get pods -o wide'
+alias kgs='kubectl get svc'
+alias kgn='kubectl get nodes -o wide'
+alias kctx='kubectl config current-context'
+alias kns='kubectl config set-context --current --namespace'
+
+# ── Terraform ─────────────────────────────────────────────────────
+alias tf='terraform'
+alias tfi='terraform init -upgrade'
+alias tfp='terraform plan -out=tfplan'
+alias tfa='terraform apply tfplan'
+alias tfd='terraform destroy'
+
+# ── macOS utilities ───────────────────────────────────────────────
+alias flushdns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
+alias showfiles='defaults write com.apple.finder AppleShowAllFiles true && killall Finder'
+alias hidefiles='defaults write com.apple.finder AppleShowAllFiles false && killall Finder'
+alias myip='curl -s https://ifconfig.me'
+alias localip="ipconfig getifaddr en0"
+alias brewup='brew update && brew upgrade && brew cleanup'
+```
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="macOS Tips" icon="apple" href="macos/tips">
+    Installing specific macOS versions, flushing DNS, customising the Dock,
+    Spotlight tricks, and screenshot shortcuts.
+  </Card>
+  <Card title="Linux Bash Scripting" icon="code" href="linux/bash-scripting">
+    Bash scripting patterns that work across macOS and Linux CI environments.
+  </Card>
+  <Card title="DevOps: Docker" icon="docker" href="devops/docker">
+    Container workflows that build on the Docker aliases and CLI habits
+    covered here.
+  </Card>
+  <Card title="DevOps: Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Kubectl patterns and cluster management techniques for your daily
+    Kubernetes work.
+  </Card>
+</CardGroup>

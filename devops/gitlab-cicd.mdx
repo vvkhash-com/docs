@@ -1,0 +1,333 @@
+---
+title: "GitLab CI/CD: Pipeline Anatomy, Docker-in-Docker & Recipes"
+sidebarTitle: "GitLab CI/CD"
+description: "Practical GitLab CI/CD recipes: pipeline structure, Docker-in-Docker builds, caching, artifacts, and a full Docker build-and-push workflow."
+---
+
+GitLab CI/CD is one of the most complete CI platforms available today — the pipeline definition lives in the same repository as the code, the built-in container registry removes the need for a separate Docker Hub account, and the `services` keyword makes ephemeral sidecar containers (like a Docker daemon or a test database) trivially easy. These notes cover the patterns that come up on almost every real project.
+
+## `.gitlab-ci.yml` Anatomy
+
+Every pipeline is defined in a `.gitlab-ci.yml` at the root of the repository. The top-level keys you'll use on every project:
+
+```yaml
+# .gitlab-ci.yml — minimal working example
+stages:          # ordered list of stage names
+  - build
+  - test
+  - deploy
+
+variables:       # pipeline-wide environment variables
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+
+default:         # defaults applied to all jobs unless overridden
+  image: alpine:3.19
+  tags:
+    - docker     # route jobs to runners with the "docker" tag
+
+# A job belongs to a stage and runs its `script` steps sequentially
+build:app:
+  stage: build
+  script:
+    - echo "Building $IMAGE_NAME"
+
+test:unit:
+  stage: test
+  script:
+    - echo "Running unit tests"
+  allow_failure: false   # default — fail the pipeline if this job fails
+
+deploy:staging:
+  stage: deploy
+  script:
+    - echo "Deploying to staging"
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+```
+
+<Note>
+  Stage order matters — jobs in stage `n+1` only start after **all** jobs in stage `n` have passed. Jobs within the same stage run in **parallel** by default.
+</Note>
+
+### Key Built-in Variables
+
+GitLab injects these into every job automatically — no configuration required:
+
+| Variable | Value | Typical Use |
+|---|---|---|
+| `$CI_REGISTRY` | `registry.gitlab.com` | Login target for `docker login` |
+| `$CI_REGISTRY_IMAGE` | Full image path for this project | Base image name |
+| `$CI_REGISTRY_USER` | GitLab token username | `docker login -u` |
+| `$CI_REGISTRY_PASSWORD` | Job token | `docker login -p` |
+| `$CI_COMMIT_SHORT_SHA` | 8-char commit hash | Image tag |
+| `$CI_COMMIT_BRANCH` | Current branch name | Conditional rules |
+| `$CI_PIPELINE_SOURCE` | `push`, `merge_request_event`, … | Rule filtering |
+| `$CI_MERGE_REQUEST_IID` | MR number | PR-specific artefact naming |
+
+## Docker-in-Docker (DinD)
+
+Running `docker build` inside a GitLab CI job requires a Docker daemon. The recommended approach is to use the official `docker:dind` **service** — GitLab spins it up as a sidecar container that the job container connects to over TLS.
+
+<Warning>
+  DinD requires the runner to be configured with the `docker` executor (or Kubernetes executor with the right settings). It does **not** work on shell executors by default.
+</Warning>
+
+### How It Works
+
+```
+┌─────────────────────────────────┐
+│         GitLab Runner           │
+│                                 │
+│  ┌──────────────┐  ┌─────────┐  │
+│  │   Job image  │  │  docker │  │
+│  │ docker:cli   │◄─│  :dind  │  │
+│  │              │  │ daemon  │  │
+│  └──────────────┘  └─────────┘  │
+└─────────────────────────────────┘
+         DOCKER_HOST=tcp://docker:2376
+```
+
+The `docker:dind` service exposes the Docker socket over TCP (with TLS on port 2376). The job sets `DOCKER_HOST` to point at it.
+
+### Minimal DinD Job
+
+```yaml
+build:image:
+  stage: build
+  image: docker:cli          # only the CLI — no daemon
+  services:
+    - docker:dind            # ephemeral Docker daemon as a sidecar
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"   # GitLab mounts certs here automatically
+  before_script:
+    - docker info            # verify the daemon is reachable
+  script:
+    - docker build -t my-image:latest .
+    - docker run --rm my-image:latest echo "smoke test passed"
+```
+
+<Tip>
+  Use `docker:cli` (not `docker:latest`) as the job image. It ships only the client binary, keeping the image small. The daemon lives exclusively in the `docker:dind` service container.
+</Tip>
+
+### Official Docs
+
+GitLab's `services` keyword is documented at [https://docs.gitlab.com/ci/services/](https://docs.gitlab.com/ci/services/). The services feature isn't Docker-specific — you can use it to spin up PostgreSQL, Redis, or any other daemon your tests need.
+
+## Full Docker Build & Push Pipeline
+
+This is a production-ready template for building a Docker image and pushing it to the built-in GitLab Container Registry on every push to `main`, plus every MR:
+
+```yaml
+# .gitlab-ci.yml — Docker build + push pipeline
+stages:
+  - build
+  - test
+  - release
+
+variables:
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_BASE: $CI_REGISTRY_IMAGE
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+default:
+  image: docker:cli
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+build:image:
+  stage: build
+  script:
+    - |
+      docker build \
+        --cache-from $IMAGE_BASE:cache \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --tag $IMAGE_BASE:$IMAGE_TAG \
+        --tag $IMAGE_BASE:$CI_COMMIT_BRANCH \
+        .
+    - docker push $IMAGE_BASE:$IMAGE_TAG
+    - docker push $IMAGE_BASE:$CI_COMMIT_BRANCH
+  rules:
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ── Test ──────────────────────────────────────────────────────────────────────
+test:smoke:
+  stage: test
+  script:
+    - docker pull $IMAGE_BASE:$IMAGE_TAG
+    - docker run --rm $IMAGE_BASE:$IMAGE_TAG /app/healthcheck.sh
+  rules:
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ── Release ───────────────────────────────────────────────────────────────────
+release:latest:
+  stage: release
+  script:
+    - docker pull $IMAGE_BASE:$IMAGE_TAG
+    - docker tag  $IMAGE_BASE:$IMAGE_TAG $IMAGE_BASE:latest
+    - docker push $IMAGE_BASE:latest
+    # Update the rolling cache layer
+    - docker tag  $IMAGE_BASE:$IMAGE_TAG $IMAGE_BASE:cache
+    - docker push $IMAGE_BASE:cache
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+```
+
+## Caching & Artifacts
+
+These two features are often confused. The distinction is important:
+
+<Tabs>
+  <Tab title="cache">
+    **Cache** speeds up jobs by persisting files between pipeline runs on the **same runner**. Use it for dependency directories (`node_modules`, `.venv`, Maven's `~/.m2`).
+
+    ```yaml
+    build:node:
+      stage: build
+      image: node:20-alpine
+      cache:
+        key:
+          files:
+            - package-lock.json    # cache busts when lockfile changes
+        paths:
+          - node_modules/
+        policy: pull-push          # pull at job start, push at job end
+      script:
+        - npm ci
+        - npm run build
+    ```
+
+    <Note>
+      Cache is **not** guaranteed to be available — it's a best-effort optimisation. Never rely on cache for correctness, only for speed.
+    </Note>
+  </Tab>
+  <Tab title="artifacts">
+    **Artifacts** are files explicitly passed **between jobs within the same pipeline**. They're stored on the GitLab server and are always reliable.
+
+    ```yaml
+    build:app:
+      stage: build
+      script:
+        - make build
+      artifacts:
+        paths:
+          - dist/                  # available to all downstream jobs
+        expire_in: 1 week          # cleaned up automatically
+
+    test:integration:
+      stage: test
+      needs: [build:app]           # download artifacts from this specific job
+      script:
+        - ls dist/                 # files are here
+        - ./run-tests.sh dist/
+    ```
+  </Tab>
+  <Tab title="cache + artifacts together">
+    A common pattern: cache dependencies, artifact the build output.
+
+    ```yaml
+    build:
+      stage: build
+      image: python:3.12-slim
+      cache:
+        key: $CI_COMMIT_REF_SLUG
+        paths:
+          - .venv/
+      artifacts:
+        paths:
+          - dist/
+        expire_in: 3 days
+      script:
+        - python -m venv .venv
+        - source .venv/bin/activate
+        - pip install -r requirements.txt
+        - python -m build
+    ```
+  </Tab>
+</Tabs>
+
+## Useful Patterns & Tips
+
+<Tabs>
+  <Tab title="rules vs only/except">
+    Prefer `rules` over the legacy `only`/`except` keywords — it's more expressive and evaluates top-to-bottom:
+
+    ```yaml
+    deploy:production:
+      stage: deploy
+      script: ./deploy.sh prod
+      rules:
+        - if: $CI_COMMIT_TAG                  # tagged releases only
+          when: manual                        # requires a human click
+        - if: $CI_COMMIT_BRANCH == "main"
+          when: on_success                    # auto-deploy on main
+        - when: never                         # skip everything else
+    ```
+  </Tab>
+  <Tab title="needs (DAG)">
+    Use `needs` to create a Directed Acyclic Graph — jobs start as soon as their dependencies finish, rather than waiting for the entire previous stage:
+
+    ```yaml
+    test:unit:
+      stage: test
+      needs: [build:app]    # starts as soon as build:app passes
+
+    test:e2e:
+      stage: test
+      needs: [build:app]    # also starts immediately — parallel with test:unit
+
+    deploy:staging:
+      stage: deploy
+      needs:
+        - test:unit
+        - test:e2e           # waits for both tests, not the whole test stage
+    ```
+  </Tab>
+  <Tab title="include & extends">
+    Break large pipelines into reusable templates:
+
+    ```yaml
+    # .gitlab/ci/docker.yml — shared template
+    .docker_job:
+      image: docker:cli
+      services:
+        - docker:dind
+      variables:
+        DOCKER_HOST: tcp://docker:2376
+        DOCKER_TLS_CERTDIR: "/certs"
+      before_script:
+        - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+    # .gitlab-ci.yml — main file
+    include:
+      - local: .gitlab/ci/docker.yml
+
+    build:image:
+      extends: .docker_job     # inherits all keys from the template
+      stage: build
+      script:
+        - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA .
+        - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    ```
+  </Tab>
+</Tabs>
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Docker Essentials" icon="docker" href="devops/docker">
+    Commands, Dockerfiles, Compose, and networking — the building blocks used inside every pipeline.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Deploy the images your GitLab pipeline builds into a Kubernetes cluster.
+  </Card>
+</CardGroup>

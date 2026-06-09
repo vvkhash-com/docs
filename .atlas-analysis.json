@@ -1,0 +1,69 @@
+{
+  "projectType": "general",
+  "projectName": "Vvkhash Notes",
+  "projectDescription": "A personal technical knowledge base and notes site by Valeriy Khashkovskiy, covering DevOps, SRE, FinOps, cloud engineering, CI/CD, Linux, and systems engineering topics.",
+  "theme": "luma",
+  "primaryColor": "#040404",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Notes",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "about"
+            ]
+          },
+          {
+            "group": "DevOps & CI/CD",
+            "pages": [
+              "devops/overview",
+              "devops/gitlab-cicd",
+              "devops/docker",
+              "devops/kubernetes"
+            ]
+          },
+          {
+            "group": "Cloud & Infrastructure",
+            "pages": [
+              "cloud/aws",
+              "cloud/gcp-azure",
+              "cloud/terraform",
+              "cloud/finops"
+            ]
+          },
+          {
+            "group": "Linux & Systems",
+            "pages": [
+              "linux/essentials",
+              "linux/bash-scripting",
+              "linux/networking",
+              "linux/troubleshooting"
+            ]
+          },
+          {
+            "group": "macOS Tips",
+            "pages": [
+              "macos/tips",
+              "macos/terminal"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Technical notes and how-to guides for DevOps practitioners",
+    "CI/CD pipeline recipes and patterns",
+    "Cloud infrastructure and IaC tips (AWS, GCP, Azure, Terraform)",
+    "Linux system administration and Bash scripting notes",
+    "FinOps cost management insights",
+    "Container and orchestration guides (Docker, Kubernetes)",
+    "macOS productivity tips for engineers"
+  ],
+  "publicApiSurface": []
+}

@@ -1,0 +1,363 @@
+---
+title: "Docker: CLI Commands, Dockerfiles, Compose & Networking"
+sidebarTitle: "Docker"
+description: "Practical Docker reference: essential CLI commands, Dockerfile best practices, multi-stage builds, Docker Compose, networking, and cleanup one-liners."
+---
+
+Docker turned container technology from a kernel curiosity into the default unit of software packaging. Whether you're building CI pipelines, running local development stacks, or shipping microservices to Kubernetes, the same small set of Docker primitives appears again and again. These notes are a field reference — not a tutorial — for the commands and patterns that actually matter in day-to-day work.
+
+## Essential CLI Commands
+
+<Tabs>
+  <Tab title="Images">
+    ```bash
+    # Build an image from a Dockerfile in the current directory
+    docker build -t myapp:1.0.0 .
+
+    # Build with a specific Dockerfile and build args
+    docker build \
+      -f docker/Dockerfile.prod \
+      --build-arg APP_VERSION=1.0.0 \
+      --build-arg NODE_ENV=production \
+      -t myapp:1.0.0 .
+
+    # List local images
+    docker images
+    docker image ls --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+    # Pull / push
+    docker pull nginx:1.25-alpine
+    docker push registry.example.com/myapp:1.0.0
+
+    # Tag an existing image
+    docker tag myapp:1.0.0 registry.example.com/myapp:latest
+
+    # Remove an image
+    docker rmi myapp:1.0.0
+
+    # Remove all dangling (untagged) images
+    docker image prune
+
+    # Remove ALL unused images (not just dangling)
+    docker image prune -a
+    ```
+  </Tab>
+  <Tab title="Containers">
+    ```bash
+    # Run a container (foreground, removed on exit)
+    docker run --rm -it ubuntu:22.04 bash
+
+    # Run detached (background), name it, map ports
+    docker run -d \
+      --name web \
+      -p 8080:80 \
+      -e APP_ENV=production \
+      nginx:1.25-alpine
+
+    # List running containers
+    docker ps
+
+    # List all containers including stopped ones
+    docker ps -a
+
+    # Execute a command in a running container
+    docker exec -it web sh
+
+    # Stream logs (follow mode)
+    docker logs -f web
+
+    # Last 100 lines with timestamps
+    docker logs --tail 100 --timestamps web
+
+    # Stop / start / restart
+    docker stop web
+    docker start web
+    docker restart web
+
+    # Remove a stopped container
+    docker rm web
+
+    # Remove a running container forcefully
+    docker rm -f web
+
+    # Remove all stopped containers
+    docker container prune
+    ```
+  </Tab>
+  <Tab title="Volumes & Inspection">
+    ```bash
+    # Mount a host directory into the container
+    docker run -v $(pwd)/data:/app/data myapp:1.0.0
+
+    # Named volume
+    docker run -v app-data:/app/data myapp:1.0.0
+
+    # List volumes
+    docker volume ls
+
+    # Inspect a container (full JSON metadata)
+    docker inspect web
+
+    # Quick IP address lookup
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' web
+
+    # Copy a file out of a container
+    docker cp web:/etc/nginx/nginx.conf ./nginx.conf
+
+    # Show resource usage (live)
+    docker stats
+
+    # Show running processes inside a container
+    docker top web
+    ```
+  </Tab>
+</Tabs>
+
+## Dockerfile Best Practices
+
+A well-written Dockerfile is reproducible, minimal, and builds quickly. These principles are ordered by impact:
+
+<Steps>
+  <Step title="Pin base image versions">
+    Always specify an exact tag. `FROM python:3.12.3-slim-bookworm` is reproducible; `FROM python:latest` is not.
+  </Step>
+  <Step title="Order layers from least to most volatile">
+    Docker caches each layer. Put `COPY requirements.txt` and `RUN pip install` before `COPY . .` — the dependency install cache survives code changes.
+  </Step>
+  <Step title="Combine RUN commands to reduce layers">
+    Each `RUN` creates a new layer. Chain related commands with `&&` and clean up in the same layer.
+  </Step>
+  <Step title="Use multi-stage builds for compiled artefacts">
+    Keep build tools out of the final image. The final image should contain only what the running process needs.
+  </Step>
+  <Step title="Run as a non-root user">
+    Add a dedicated user and switch to it before the `CMD`. This is required by many security policies and Kubernetes admission controllers.
+  </Step>
+</Steps>
+
+### Multi-Stage Build Example
+
+```dockerfile
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy dependency manifests first (better layer caching)
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+RUN npm run build          # outputs to /app/dist
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+# Install only production OS deps
+RUN apk add --no-cache dumb-init
+
+WORKDIR /app
+
+# Non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy ONLY the built artefact and production node_modules
+COPY --from=builder /app/dist       ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY package.json ./
+
+USER appuser
+
+EXPOSE 3000
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/server.js"]
+```
+
+<Note>
+  The final image contains zero build tools (`npm`, compilers, dev dependencies). The `AS builder` stage is discarded — only its output is copied. This typically cuts image size by 60–80%.
+</Note>
+
+### Python Multi-Stage Example
+
+```dockerfile
+# ── Stage 1: Dependencies ─────────────────────────────────────────────────────
+FROM python:3.12.3-slim-bookworm AS deps
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM python:3.12.3-slim-bookworm AS runtime
+
+WORKDIR /app
+
+COPY --from=deps /install /usr/local
+COPY src/ ./src/
+
+RUN useradd -r -u 1001 appuser
+USER appuser
+
+CMD ["python", "-m", "src.main"]
+```
+
+### `.dockerignore`
+
+Always create a `.dockerignore` alongside your `Dockerfile`:
+
+```
+# .dockerignore
+.git
+.github
+**/__pycache__
+**/*.pyc
+node_modules
+*.log
+*.md
+.env
+.env.*
+dist
+coverage
+.pytest_cache
+.mypy_cache
+```
+
+## Docker Compose
+
+Docker Compose is the right tool for local development stacks and single-host multi-container deployments.
+
+```yaml
+# compose.yaml (preferred filename in Compose V2)
+name: myapp
+
+services:
+  app:
+    build:
+      context: .
+      target: runtime          # target a specific stage in multi-stage Dockerfile
+    image: myapp:dev
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://user:pass@db:5432/mydb
+      REDIS_URL: redis://cache:6379
+    depends_on:
+      db:
+        condition: service_healthy   # wait for the healthcheck to pass
+      cache:
+        condition: service_started
+    volumes:
+      - ./src:/app/src              # hot-reload in development
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d mydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  pg-data:
+```
+
+```bash
+# Common Compose commands
+docker compose up -d              # start all services detached
+docker compose up -d --build      # rebuild images before starting
+docker compose logs -f app        # follow logs for the app service
+docker compose ps                 # status of all services
+docker compose exec app sh        # shell into the running app container
+docker compose down               # stop and remove containers
+docker compose down -v            # also remove named volumes (destructive!)
+docker compose restart app        # restart a single service
+```
+
+## Docker Networking
+
+Docker creates three default networks. In practice you'll use two of them:
+
+| Network | Driver | Use Case |
+|---|---|---|
+| `bridge` | `bridge` | Default for `docker run`. Containers are isolated from the host. |
+| `host` | `host` | Container shares the host's network stack. Maximum performance, zero isolation. |
+| `none` | `null` | No networking. Useful for batch/offline jobs. |
+
+```bash
+# Create a user-defined bridge network (recommended over default bridge)
+docker network create myapp-net
+
+# Containers on the same user-defined network can reach each other by name
+docker run -d --name api   --network myapp-net myapp:1.0.0
+docker run -d --name proxy --network myapp-net nginx:alpine
+
+# Inside the proxy container, "api" resolves to the api container's IP
+# (Docker's embedded DNS handles this automatically)
+
+# Inspect network topology
+docker network inspect myapp-net
+
+# List all networks
+docker network ls
+```
+
+<Tip>
+  Always use user-defined bridge networks instead of the default `bridge`. User-defined networks get automatic DNS resolution between containers by name, which the default `bridge` does not provide.
+</Tip>
+
+## Cleanup One-Liners
+
+Container and image sprawl is a real issue on long-running build hosts. These commands keep things tidy:
+
+```bash
+# Remove all stopped containers
+docker container prune -f
+
+# Remove all dangling images (untagged layers)
+docker image prune -f
+
+# Remove ALL unused images (not referenced by any container)
+docker image prune -a -f
+
+# Remove unused volumes
+docker volume prune -f
+
+# Remove unused networks
+docker network prune -f
+
+# Nuclear option: remove everything not in use
+# (stopped containers, dangling images, unused networks, unused volumes)
+docker system prune -a -f --volumes
+
+# Show disk usage breakdown
+docker system df
+
+# Show verbose disk usage (per object)
+docker system df -v
+```
+
+<Warning>
+  `docker system prune -a --volumes` is destructive. On a production build host, be specific — prune only dangling images and stopped containers rather than running the nuclear option.
+</Warning>
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="GitLab CI/CD" icon="gitlab" href="devops/gitlab-cicd">
+    Use Docker-in-Docker inside GitLab pipelines to build and push the images you create with these commands.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Run Docker images at scale — Kubernetes orchestrates the containers Docker builds.
+  </Card>
+</CardGroup>

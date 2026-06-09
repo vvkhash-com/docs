@@ -1,0 +1,454 @@
+---
+title: "AWS Practical CLI and Services Reference for Engineers"
+sidebarTitle: "AWS"
+description: "Hands-on AWS CLI commands, service quick reference, IAM best practices, S3 and EC2 tips for cloud practitioners and solutions architects."
+---
+
+AWS is the backbone of most production infrastructure I work with day-to-day. These notes distill the commands and patterns I reach for most often — from wiring up the CLI on a fresh machine to auditing IAM policies and managing EC2 fleets. The goal is a fast lookup reference, not a comprehensive tutorial.
+
+## AWS CLI Setup
+
+<Steps>
+  <Step title="Install the AWS CLI">
+    Download and install AWS CLI v2 for your platform.
+
+    <CodeGroup>
+      ```bash macOS
+      brew install awscli
+      ```
+
+      ```bash Linux
+      curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+      unzip awscliv2.zip
+      sudo ./aws/install
+      ```
+
+      ```powershell Windows
+      msiexec.exe /i https://awscli.amazonaws.com/AWSCLIV2.msi
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure credentials">
+    Run the interactive setup. You'll need an Access Key ID and Secret from IAM.
+
+    ```bash
+    aws configure
+    # AWS Access Key ID [None]: AKIAIOSFODNN7EXAMPLE
+    # AWS Secret Access Key [None]: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    # Default region name [None]: us-east-1
+    # Default output format [None]: json
+    ```
+
+    Credentials are stored in `~/.aws/credentials`; config in `~/.aws/config`.
+  </Step>
+
+  <Step title="Use named profiles">
+    Managing multiple accounts is much cleaner with named profiles.
+
+    ```bash
+    # Configure a named profile
+    aws configure --profile prod
+
+    # Use a specific profile for any command
+    aws s3 ls --profile prod
+
+    # Set a profile for the entire shell session
+    export AWS_PROFILE=prod
+    ```
+  </Step>
+
+  <Step title="Verify the active identity">
+    ```bash
+    aws sts get-caller-identity
+    # Returns Account, UserId, and ARN — great sanity check before destructive ops
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Store long-term credentials only in non-production tooling profiles. For production workloads running on EC2 or Lambda, always use **IAM roles** attached to the compute resource — no static keys needed.
+</Tip>
+
+---
+
+## Key Services Quick Reference
+
+<CardGroup cols={2}>
+  <Card title="EC2" icon="server">
+    Virtual machines in the cloud. Choose instance families based on workload: `t3`/`t4g` for burstable dev, `m6i` for general-purpose, `c6i` for compute-heavy, `r6i` for memory-intensive apps.
+  </Card>
+  <Card title="S3" icon="bucket">
+    Object storage with 11 nines durability. Used for backups, static sites, data lakes, Lambda deployment packages, Terraform state, and log archives.
+  </Card>
+  <Card title="IAM" icon="lock">
+    Identity and Access Management controls who can do what across all AWS services. Covers users, groups, roles, and policies (identity-based and resource-based).
+  </Card>
+  <Card title="VPC" icon="network-wired">
+    Your private network in AWS. Define subnets (public/private), route tables, internet gateways, NAT gateways, security groups, and NACLs.
+  </Card>
+  <Card title="Lambda" icon="bolt">
+    Serverless compute. Run code in response to events (API Gateway, S3, SQS, EventBridge). Billed per invocation and duration (100ms increments).
+  </Card>
+  <Card title="RDS" icon="database">
+    Managed relational databases: PostgreSQL, MySQL, MariaDB, Oracle, SQL Server, and Aurora. Handles backups, patching, and failover automatically.
+  </Card>
+  <Card title="CloudWatch" icon="chart-line">
+    Metrics, logs, alarms, and dashboards. Use metric filters to turn log patterns into actionable alerts, and Container Insights for ECS/EKS observability.
+  </Card>
+  <Card title="CloudTrail" icon="shield-halved">
+    API audit log for every call made to your account. Essential for security investigations, compliance, and change tracking. Enable in all regions.
+  </Card>
+</CardGroup>
+
+---
+
+## IAM Best Practices
+
+Good IAM hygiene is the single highest-leverage security practice in AWS. These are the principles I apply on every account I manage.
+
+<Accordion title="Least Privilege — grant only what is needed">
+  Start with a deny-all posture and add only the permissions required. Use IAM Access Analyzer and the **last-accessed data** in IAM to identify and remove unused permissions over time.
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": "arn:aws:s3:::my-app-bucket/*"
+      }
+    ]
+  }
+  ```
+</Accordion>
+
+<Accordion title="Roles over Users for workloads">
+  EC2 instances, Lambda functions, ECS tasks, and CI/CD pipelines should all authenticate via **IAM roles**, not static access keys. Roles use temporary credentials rotated automatically by STS.
+
+  ```bash
+  # Attach an instance profile (role) to a running EC2 instance
+  aws ec2 associate-iam-instance-profile \
+    --instance-id i-0abcd1234efgh5678 \
+    --iam-instance-profile Name=MyAppRole
+  ```
+</Accordion>
+
+<Accordion title="Enforce MFA on human users">
+  Require MFA for the root account immediately. Enforce MFA on all IAM users via an SCP (if using AWS Organizations) or a conditional IAM policy.
+
+  ```json
+  {
+    "Effect": "Deny",
+    "NotAction": [
+      "iam:CreateVirtualMFADevice",
+      "iam:EnableMFADevice",
+      "iam:GetUser",
+      "iam:ListMFADevices",
+      "iam:ListVirtualMFADevices",
+      "sts:GetSessionToken"
+    ],
+    "Resource": "*",
+    "Condition": {
+      "BoolIfExists": {
+        "aws:MultiFactorAuthPresent": "false"
+      }
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Use permission boundaries and SCPs">
+  **Permission boundaries** cap the maximum permissions a role or user can have, even if their attached policies are overly broad. **Service Control Policies (SCPs)** in AWS Organizations apply account-wide guardrails — great for preventing region sprawl or blocking specific risky actions.
+
+  ```bash
+  # List SCPs attached to an OU
+  aws organizations list-policies-for-target \
+    --target-id ou-xxxx-yyyyyyyy \
+    --filter SERVICE_CONTROL_POLICY
+  ```
+</Accordion>
+
+<Note>
+  Never use the root account for day-to-day work. Lock it down with MFA, delete or disable root access keys, and only access it for tasks that genuinely require root (a very short list).
+</Note>
+
+---
+
+## S3 Operations
+
+<Tabs>
+  <Tab title="Bucket Management">
+    ```bash
+    # List all buckets
+    aws s3 ls
+
+    # Create a bucket (region must match your config or be specified)
+    aws s3 mb s3://my-new-bucket --region us-east-1
+
+    # List objects in a bucket (with sizes)
+    aws s3 ls s3://my-bucket --human-readable --recursive
+
+    # Delete an empty bucket
+    aws s3 rb s3://my-old-bucket
+
+    # Force-delete a bucket and all its contents
+    aws s3 rb s3://my-old-bucket --force
+    ```
+  </Tab>
+
+  <Tab title="File Operations">
+    ```bash
+    # Upload a single file
+    aws s3 cp ./report.pdf s3://my-bucket/reports/report.pdf
+
+    # Download a file
+    aws s3 cp s3://my-bucket/reports/report.pdf ./report.pdf
+
+    # Sync a local directory to S3 (only changed files)
+    aws s3 sync ./dist s3://my-static-site --delete
+
+    # Sync with a specific storage class
+    aws s3 sync ./backups s3://my-backups \
+      --storage-class STANDARD_IA
+
+    # Move (copy + delete source)
+    aws s3 mv s3://my-bucket/old-path/ s3://my-bucket/new-path/ \
+      --recursive
+    ```
+  </Tab>
+
+  <Tab title="Access & Permissions">
+    ```bash
+    # Block all public access on a bucket (recommended default)
+    aws s3api put-public-access-block \
+      --bucket my-bucket \
+      --public-access-block-configuration \
+        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+    # Enable versioning
+    aws s3api put-bucket-versioning \
+      --bucket my-bucket \
+      --versioning-configuration Status=Enabled
+
+    # Enable server-side encryption (SSE-S3)
+    aws s3api put-bucket-encryption \
+      --bucket my-bucket \
+      --server-side-encryption-configuration '{
+        "Rules": [{
+          "ApplyServerSideEncryptionByDefault": {
+            "SSEAlgorithm": "AES256"
+          }
+        }]
+      }'
+
+    # Generate a pre-signed URL (valid 1 hour)
+    aws s3 presign s3://my-bucket/private-file.zip \
+      --expires-in 3600
+    ```
+  </Tab>
+
+  <Tab title="Lifecycle Rules">
+    ```bash
+    # Apply a lifecycle policy to transition and expire objects
+    aws s3api put-bucket-lifecycle-configuration \
+      --bucket my-bucket \
+      --lifecycle-configuration '{
+        "Rules": [{
+          "ID": "archive-old-logs",
+          "Status": "Enabled",
+          "Filter": {"Prefix": "logs/"},
+          "Transitions": [{
+            "Days": 30,
+            "StorageClass": "STANDARD_IA"
+          },{
+            "Days": 90,
+            "StorageClass": "GLACIER"
+          }],
+          "Expiration": {"Days": 365}
+        }]
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## EC2 Instance Management
+
+<Steps>
+  <Step title="Find the right AMI">
+    ```bash
+    # Find latest Amazon Linux 2023 AMI in us-east-1
+    aws ec2 describe-images \
+      --owners amazon \
+      --filters "Name=name,Values=al2023-ami-*-x86_64" \
+                "Name=state,Values=available" \
+      --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+      --output text
+    ```
+  </Step>
+
+  <Step title="Launch an instance">
+    ```bash
+    aws ec2 run-instances \
+      --image-id ami-0abcdef1234567890 \
+      --instance-type t3.micro \
+      --key-name my-key-pair \
+      --security-group-ids sg-0123456789abcdef0 \
+      --subnet-id subnet-0123456789abcdef0 \
+      --iam-instance-profile Name=MyAppRole \
+      --tag-specifications 'ResourceType=instance,Tags=[
+        {Key=Name,Value=web-server-01},
+        {Key=Env,Value=prod},
+        {Key=Owner,Value=platform-team}
+      ]' \
+      --count 1
+    ```
+  </Step>
+
+  <Step title="Common instance operations">
+    ```bash
+    # List running instances with Name tag and private IP
+    aws ec2 describe-instances \
+      --filters "Name=instance-state-name,Values=running" \
+      --query "Reservations[*].Instances[*].{
+        Name:Tags[?Key=='Name']|[0].Value,
+        ID:InstanceId,
+        Type:InstanceType,
+        IP:PrivateIpAddress,
+        State:State.Name
+      }" \
+      --output table
+
+    # Stop / start / reboot
+    aws ec2 stop-instances --instance-ids i-0abcd1234efgh5678
+    aws ec2 start-instances --instance-ids i-0abcd1234efgh5678
+    aws ec2 reboot-instances --instance-ids i-0abcd1234efgh5678
+
+    # Terminate (irreversible)
+    aws ec2 terminate-instances --instance-ids i-0abcd1234efgh5678
+    ```
+  </Step>
+
+  <Step title="Connect with SSM Session Manager">
+    Skip bastion hosts and open SSH ports entirely. SSM Session Manager gives browser or CLI shell access through IAM authentication.
+
+    ```bash
+    # Requires AmazonSSMManagedInstanceCore policy on the instance role
+    aws ssm start-session --target i-0abcd1234efgh5678
+
+    # Port-forward RDS or internal service to localhost
+    aws ssm start-session \
+      --target i-0abcd1234efgh5678 \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["5432"],"localPortNumber":["5432"]}'
+    ```
+  </Step>
+</Steps>
+
+---
+
+## CloudWatch Essentials
+
+```bash
+# Tail a log group in real time (like `tail -f`)
+aws logs tail /aws/lambda/my-function --follow
+
+# Filter logs for ERROR entries in the last hour
+aws logs filter-log-events \
+  --log-group-name /aws/ecs/my-service \
+  --filter-pattern "ERROR" \
+  --start-time $(date -d '1 hour ago' +%s000)
+
+# Get the latest CPU utilization metric for an EC2 instance
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/EC2 \
+  --metric-name CPUUtilization \
+  --dimensions Name=InstanceId,Value=i-0abcd1234efgh5678 \
+  --start-time $(date -u -d '30 minutes ago' +%FT%TZ) \
+  --end-time $(date -u +%FT%TZ) \
+  --period 300 \
+  --statistics Average \
+  --output table
+
+# Create a simple alarm — email when CPU > 80% for 2 periods
+aws cloudwatch put-metric-alarm \
+  --alarm-name high-cpu-web-01 \
+  --metric-name CPUUtilization \
+  --namespace AWS/EC2 \
+  --statistic Average \
+  --period 300 \
+  --threshold 80 \
+  --comparison-operator GreaterThanThreshold \
+  --evaluation-periods 2 \
+  --alarm-actions arn:aws:sns:us-east-1:123456789012:alerts \
+  --dimensions Name=InstanceId,Value=i-0abcd1234efgh5678
+```
+
+---
+
+## Useful One-Liners
+
+```bash
+# Find all unattached EBS volumes (potential waste)
+aws ec2 describe-volumes \
+  --filters Name=status,Values=available \
+  --query "Volumes[*].{ID:VolumeId,Size:Size,AZ:AvailabilityZone}" \
+  --output table
+
+# List all IAM users with their last-used date
+aws iam list-users \
+  --query "Users[*].{User:UserName,Created:CreateDate}" \
+  --output table
+
+# Find security groups with unrestricted SSH (0.0.0.0/0 on port 22)
+aws ec2 describe-security-groups \
+  --filters Name=ip-permission.from-port,Values=22 \
+            Name=ip-permission.to-port,Values=22 \
+            Name=ip-permission.cidr,Values='0.0.0.0/0' \
+  --query "SecurityGroups[*].{ID:GroupId,Name:GroupName,VPC:VpcId}" \
+  --output table
+
+# Get storage size for a specific S3 bucket (BucketSizeBytes requires BucketName + StorageType)
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/S3 \
+  --metric-name BucketSizeBytes \
+  --dimensions Name=BucketName,Value=my-bucket \
+              Name=StorageType,Value=StandardStorage \
+  --start-time $(date -d '2 days ago' +%F) \
+  --end-time $(date +%F) \
+  --period 86400 --statistics Average
+
+# Decode an encoded authorization failure message
+aws sts decode-authorization-message \
+  --encoded-message <paste-encoded-message-here> \
+  --query DecodedMessage --output text | python3 -m json.tool
+```
+
+<Warning>
+  Always run destructive commands (`terminate-instances`, `rb --force`, `delete-*`) against a **dry-run** first where supported (`--dry-run` flag), or at minimum double-check the target resource IDs. A misplaced `--recursive` or wrong account profile has caused real production incidents.
+</Warning>
+
+---
+
+## Related Notes
+
+<CardGroup cols={2}>
+  <Card title="Terraform" icon="layer-group" href="cloud/terraform">
+    Provision and manage AWS resources as code with Terraform — state, modules, and real-world patterns.
+  </Card>
+  <Card title="FinOps & Cost Management" icon="dollar-sign" href="cloud/finops">
+    AWS Cost Explorer, Budgets, rightsizing, and tooling notes for keeping cloud spend under control.
+  </Card>
+  <Card title="GCP & Azure Reference" icon="cloud" href="cloud/gcp-azure">
+    Quick reference for GCP and Azure CLI, key services, and cross-cloud comparisons.
+  </Card>
+  <Card title="Kubernetes" icon="dharmachakra" href="devops/kubernetes">
+    Container orchestration on EKS and beyond — deployments, networking, and operations.
+  </Card>
+</CardGroup>

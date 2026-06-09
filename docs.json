@@ -1,0 +1,73 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Vvkhash Notes",
+  "theme": "luma",
+  "colors": {
+    "primary": "#040404"
+  },
+  "favicon": "https://media.brand.dev/fd68cce0-05d0-41fd-901c-702c42c2e0d0.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Notes",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "about"
+            ]
+          },
+          {
+            "group": "DevOps & CI/CD",
+            "pages": [
+              "devops/overview",
+              "devops/gitlab-cicd",
+              "devops/docker",
+              "devops/kubernetes"
+            ]
+          },
+          {
+            "group": "Cloud & Infrastructure",
+            "pages": [
+              "cloud/aws",
+              "cloud/gcp-azure",
+              "cloud/terraform",
+              "cloud/finops"
+            ]
+          },
+          {
+            "group": "Linux & Systems",
+            "pages": [
+              "linux/essentials",
+              "linux/bash-scripting",
+              "linux/networking",
+              "linux/troubleshooting"
+            ]
+          },
+          {
+            "group": "macOS Tips",
+            "pages": [
+              "macos/tips",
+              "macos/terminal"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "primary": {
+      "type": "button",
+      "label": "vvkhash.com",
+      "href": "https://vvkhash.com"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/vvkhash",
+      "x": "https://x.com/vvkhash",
+      "linkedin": "https://linkedin.com/in/vvkhash"
+    }
+  }
+}
