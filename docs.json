@@ -80,5 +80,12 @@
   },
   "icons": {
     "library": "fontawesome"
-  }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/about",
+      "permanent": true
+    }
+  ]
 }
