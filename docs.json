@@ -61,7 +61,21 @@
       "type": "button",
       "label": "vvkhash.com",
       "href": "https://vvkhash.com"
-    }
+    },
+    "links": [
+      {
+        "href": "mailto:hi@mintlify.com",
+        "label": "Support"
+      },
+      {
+        "href": "mailto:hi@mintlify.com",
+        "label": "er"
+      },
+      {
+        "href": "mailto:hi@mintlify.com",
+        "label": "asdff"
+      }
+    ]
   },
   "footer": {
     "socials": {
@@ -69,5 +83,11 @@
       "x": "https://x.com/vvkhash",
       "linkedin": "https://linkedin.com/in/vvkhash"
     }
+  },
+  "styling": {
+    "eyebrows": "section"
+  },
+  "icons": {
+    "library": "fontawesome"
   }
 }
