@@ -87,5 +87,8 @@
       "destination": "/about",
       "permanent": true
     }
-  ]
+  ],
+  "metadata": {
+    "timestamp": true
+  }
 }
