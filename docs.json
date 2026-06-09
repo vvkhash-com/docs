@@ -14,7 +14,6 @@
           {
             "group": "Overview",
             "pages": [
-              "introduction",
               "about"
             ]
           },
@@ -22,7 +21,6 @@
             "group": "DevOps & CI/CD",
             "pages": [
               "devops/overview",
-              "devops/gitlab-cicd",
               "devops/docker",
               "devops/kubernetes"
             ]
