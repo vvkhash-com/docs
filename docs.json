@@ -15,12 +15,6 @@
         "tab": "Notes",
         "groups": [
           {
-            "group": "Overview",
-            "pages": [
-              "about"
-            ]
-          },
-          {
             "group": "DevOps & CI/CD",
             "pages": [
               "devops/overview",
