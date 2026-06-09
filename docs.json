@@ -22,6 +22,7 @@
             "pages": [
               "devops/overview",
               "devops/docker",
+              "devops/gitlab-cicd",
               "devops/kubernetes"
             ]
           },
