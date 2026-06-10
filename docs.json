@@ -12,9 +12,14 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Notes",
+        "tab": "[ About / CV ]",
         "pages": [
-          "untitled-page",
+          "about/about"
+        ]
+      },
+      {
+        "tab": "[ Notes ]",
+        "groups": [
           {
             "group": "DevOps & CI/CD",
             "pages": [
@@ -27,10 +32,16 @@
           {
             "group": "Cloud & Infrastructure",
             "pages": [
-              "cloud/aws",
-              "cloud/gcp-azure",
               "cloud/terraform",
-              "cloud/finops"
+              "cloud/finops",
+              {
+                "group": "PCP",
+                "pages": [
+                  "cloud/aws",
+                  "cloud/gcp-azure",
+                  "cloud/azure"
+                ]
+              }
             ]
           },
           {
@@ -52,7 +63,10 @@
         ]
       },
       {
-        "tab": "R&D"
+        "tab": "[ R&D ]",
+        "pages": [
+          "about"
+        ]
       }
     ]
   },
