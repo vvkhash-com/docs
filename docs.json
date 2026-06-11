@@ -115,7 +115,12 @@
   },
   "description": "Software and Systems Engineering",
   "fonts": {
-    "family": "Roboto"
+    "heading": {
+      "family": "Roboto"
+    },
+    "body": {
+      "family": "Roboto"
+    }
   },
   "thumbnails": {
     "fonts": {
