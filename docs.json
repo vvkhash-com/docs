@@ -14,7 +14,9 @@
       {
         "tab": "[ About / CV ]",
         "pages": [
-          "about/about"
+          "about/about",
+          "about/software-systems",
+          "about/academic-research"
         ]
       },
       {
