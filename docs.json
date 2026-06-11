@@ -21,7 +21,8 @@
             "group": "CV",
             "pages": []
           }
-        ]
+        ],
+        "icon": "command"
       },
       {
         "tab": "[ Notes ]",
@@ -66,7 +67,8 @@
               "macos/terminal"
             ]
           }
-        ]
+        ],
+        "icon": "typewriter"
       },
       {
         "tab": "[ R&D ]"
