@@ -16,7 +16,11 @@
         "pages": [
           "about/about",
           "about/software-systems",
-          "about/academic-research"
+          "about/academic-research",
+          {
+            "group": "CV",
+            "pages": []
+          }
         ]
       },
       {
