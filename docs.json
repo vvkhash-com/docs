@@ -71,7 +71,8 @@
         "icon": "typewriter"
       },
       {
-        "tab": "[ R&D ]"
+        "tab": "[ RESOURCES ]",
+        "icon": "database"
       }
     ]
   },
