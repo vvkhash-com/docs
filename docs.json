@@ -82,7 +82,7 @@
   "navbar": {
     "primary": {
       "type": "button",
-      "label": "TTY",
+      "label": "TTY/BLOG",
       "href": "https://tty.vvkhash.com/"
     }
   },
