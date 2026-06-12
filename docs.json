@@ -72,7 +72,10 @@
       },
       {
         "tab": "[ RESOURCES ]",
-        "icon": "database"
+        "icon": "database",
+        "pages": [
+          "resources/index"
+        ]
       }
     ]
   },
@@ -94,7 +97,7 @@
       "github": "https://github.com/vvkhash",
       "x": "https://x.com/vvkhash",
       "linkedin": "https://linkedin.com/in/vvkhash",
-      "website": "https://vvkhash.com"
+      "website": "https://vvkhash.com444"
     }
   },
   "styling": {
