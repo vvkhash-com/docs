@@ -82,15 +82,9 @@
   "navbar": {
     "primary": {
       "type": "button",
-      "label": "vvkhash.com",
-      "href": "https://vvkhash.com"
-    },
-    "links": [
-      {
-        "href": "https://tty.vvkhash.com/",
-        "label": "TTY"
-      }
-    ]
+      "label": "TTY",
+      "href": "https://tty.vvkhash.com/"
+    }
   },
   "footer": {
     "socials": {
