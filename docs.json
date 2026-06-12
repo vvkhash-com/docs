@@ -15,11 +15,16 @@
         "tab": "[ About / CV ]",
         "pages": [
           "about/about",
-          "about/software-systems",
           "about/academic-research",
+          "about/software-systems",
           {
             "group": "CV",
-            "pages": []
+            "pages": [
+              "about/cv/key-skills",
+              "about/cv/expertise-area",
+              "about/cv/expertise-domains"
+            ],
+            "icon": "capricorn"
           }
         ],
         "icon": "command"
@@ -66,6 +71,38 @@
               "macos/tips",
               "macos/terminal"
             ]
+          },
+          {
+            "group": "Operating systems and HW platforms",
+            "pages": []
+          },
+          {
+            "group": "Programming and scripting",
+            "pages": []
+          },
+          {
+            "group": "Virtualization and containerization",
+            "pages": []
+          },
+          {
+            "group": "Public cloud platforms and IAAS",
+            "pages": []
+          },
+          {
+            "group": "CI/CD",
+            "pages": []
+          },
+          {
+            "group": "Databases",
+            "pages": []
+          },
+          {
+            "group": "Monitoring and alerting",
+            "pages": []
+          },
+          {
+            "group": "Cost management",
+            "pages": []
           }
         ],
         "icon": "typewriter"
