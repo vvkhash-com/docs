@@ -12,20 +12,14 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "[ About / CV ]",
+        "tab": "[ About ]",
         "pages": [
           "about/about",
-          "about/academic-research",
           "about/software-systems",
-          {
-            "group": "CV",
-            "pages": [
-              "about/cv/key-skills",
-              "about/cv/expertise-area",
-              "about/cv/expertise-domains"
-            ],
-            "icon": "capricorn"
-          }
+          "about/cv/key-skills",
+          "about/cv/expertise-area",
+          "about/experience-domains",
+          "about/academic-research"
         ],
         "icon": "command"
       },
